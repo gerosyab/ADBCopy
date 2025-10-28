@@ -1,0 +1,82 @@
+---
+alwaysApply: false
+---
+project_name: ADBCopy
+project_description: Python/PyQt6 기반 ADB 파일 탐색기. 듀얼 패널 UI와 'TeraCopy' 스타일의 안정적인 파일 전송 큐 기능 제공.
+
+---
+
+tech_stack:
+  - name: Language
+    value: Python 3.10+
+  - name: UI
+    value: PyQt6 (절대 PySide6, Tkinter 등 다른 UI 라이브러리를 사용하지 말 것)
+  - name: Threading
+    value: QThread 및 시그널/슬롯 (UI 업데이트를 위해 Python 내장 `threading` 모듈을 직접 사용하지 말 것)
+  - name: ADB Backend
+    value: Python `subprocess` 모듈만 사용 (절대 `pure-python-adb` 등 서드파티 ADB 라이브러리를 사용하지 말 것)
+
+---
+
+file_structure:
+  description: AI는 새 파일 생성 시 반드시 이 구조를 따라야 합니다. 로직은 'core', UI는 'ui', 스레드는 'workers'에 분리합니다.
+  layout:
+    - adb_copy/
+    - "  __init__.py"
+    - "  main.py           # 엔트리 포인트: QApplication, MainWindow 인스턴스 생성"
+    - "  main_window.py    # QMainWindow, FileZilla 스타일 수직 레이아웃 (콘솔/듀얼패널/전송큐)"
+    - "  core/"
+    - "    __init__.py"
+    - "    adb_manager.py  # AdbManager 클래스: 모든 `subprocess` ADB 호출 래핑. PyQt 임포트 금지."
+    - "    settings_manager.py # SettingsManager 클래스: config.ini 또는 JSON 설정 로드/저장."
+    - "  ui/"
+    - "    __init__.py"
+    - "    console_widget.py      # ConsoleWidget: 상단 콘솔 메시지 영역 (INFO/DEBUG 로그)"
+    - "    folder_tree_widget.py  # FolderTreeWidget: 폴더 트리뷰 (경로 입력창 + QTreeWidget)"
+    - "    file_detail_widget.py  # FileDetailWidget: 파일 상세 목록 (QTableWidget: 이름/크기/권한/날짜)"
+    - "    file_panel.py          # FilePanel: 폴더트리 + 파일상세를 수직 결합한 패널"
+    - "    transfer_queue_widget.py # TransferQueueWidget: 하단 전송 큐/진행률 영역"
+    - "    settings_dialog.py     # SettingsDialog: 환경설정 UI."
+    - "  workers/"
+    - "    __init__.py"
+    - "    transfer_worker.py # TransferWorker (QObject): QThread에서 파일 전송 큐 처리. 진행률/오류 시그널 방출."
+    - "    device_watcher.py  # DeviceWatcher (QObject): QThread에서 `adb devices` 폴링, 기기 변경 시그널 방출."
+    - "    file_list_worker.py # FileListWorker (QObject): QThread에서 `adb shell ls` 실행, 파일 목록 시그널 방출."
+    - "config.ini"
+    - "requirements.txt"
+    - ".mdc"
+
+---
+
+coding_conventions:
+  - rule: PEP 8
+    description: "모든 Python 코드는 PEP 8을 준수합니다. 최대 줄 길이는 100자로 합니다."
+  - rule: Naming
+    description: "클래스: `PascalCase` (예: `MainWindow`), 함수/메서드/변수: `snake_case` (예: `list_files`)."
+  - rule: Type Hinting
+    description: "필수: 모든 함수/메서드 시그니처와 반환 값에 Python 3.10+ 스타일 타입 힌트를 포함합니다. (예: `def get_devices() -> list[str]:`)"
+  - rule: Docstrings
+    description: "필수: 모든 공개(public) 클래스, 메서드, 함수에 Google 스타일 Docstring을 작성합니다. (Args, Returns 포함)"
+  - rule: Imports
+    description: "항상 절대 경로 임포트를 사용합니다. 표준 라이브러리, PyQt6, 로컬 프로젝트 순으로 그룹화합니다."
+
+---
+
+core_principles:
+  - principle: "필수: UI Blocking 금지"
+    description: "메인 UI 스레드는 절대 차단(block)되어서는 안 됩니다. `adb` 명령어 실행, 파일 I/O 등 0.1초 이상 걸리는 모든 작업은 `workers/` 디렉터리의 `QObject`를 `QThread`로 이동시켜 비동기 처리하고, 결과는 **시그널(signal)**을 통해 UI 스레드로 전달해야 합니다."
+  - principle: 관심사의 분리 (Separation of Concerns)
+    description: |
+      1. `core` (예: `adb_manager.py`)는 순수 Python이어야 하며, PyQt6를 임포트하거나 알아서는 안 됩니다.
+      2. `workers`는 오직 시그널을 통해서만 UI와 통신해야 하며, UI 위젯을 직접 참조하거나 조작해서는 안 됩니다.
+      3. `ui` 및 `main_window`는 `workers`가 보낸 시그널에만 반응해야 하며, `subprocess` 로직을 포함해서는 안 됩니다.
+  - principle: 단일 책임 원칙 (Single Responsibility)
+    description: "각 파일과 클래스는 `file_structure`에 정의된 명확한 단일 책임을 가져야 합니다."
+
+---
+
+ai_behavior:
+  - "코드를 생성하거나 수정하기 전에, 항상 이 파일의 모든 규칙을 읽고 준수해야 합니다."
+  - "기존 코드를 수정할 때, 변경 사항 요약이 아닌 **전체 업데이트된 코드 블록** (함수 전체 또는 클래스 전체)을 제공하여 사용자가 쉽게 복사/붙여넣기 할 수 있도록 합니다."
+  - "사용자의 명시적인 허락 없이는 `file_structure`에 정의되지 않은 새 파일을 생성하거나 기존 구조를 변경하지 않습니다."
+  - "모든 신규 코드에는 `coding_conventions`에 정의된 타입 힌트와 docstring이 반드시 포함되어야 합니다."
