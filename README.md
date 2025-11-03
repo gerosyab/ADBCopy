@@ -4,6 +4,9 @@ A simple ADB file explorer with FileZilla-style UI for managing files on Android
 
 Inspired by [AdbExplorer](https://github.com/gregko/AdbExplorer), this project implements a clean and intuitive interface similar to FileZilla for easy file transfer between your computer and Android devices.
 
+<img width="2793" height="1841" alt="image" src="https://github.com/user-attachments/assets/7bd96a7f-3eb3-42bb-b473-38f165c9748d" />
+
+
 ## Features
 
 - **Dual-panel interface** - Local and remote file systems side-by-side
