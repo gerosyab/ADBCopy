@@ -7,11 +7,14 @@ Inspired by [AdbExplorer](https://github.com/gregko/AdbExplorer), this project i
 ## Features
 
 - **Dual-panel interface** - Local and remote file systems side-by-side
-- **Drag & drop** - Easy file transfers between panels
-- **Transfer queue** - Monitor multiple file transfers with progress tracking
+- **Drag & drop** - Easy file/folder transfers between panels
+- **Folder transfer** - Recursive folder synchronization support
+- **Windows Explorer integration** - Drag from Explorer or copy/paste files
+- **Transfer queue** - Monitor multiple file transfers with real-time progress
 - **File management** - Create folders, rename, delete files on Android devices
+- **Navigation history** - Back/forward buttons for easy browsing
 - **Multi-language support** - English and Korean (한국어)
-- **Real-time speed monitoring** - Transfer speed and estimated time display
+- **Real-time monitoring** - Transfer speed, ETA, and file details with date/time
 
 ## Requirements
 
@@ -54,6 +57,25 @@ Inspired by [AdbExplorer](https://github.com/gregko/AdbExplorer), this project i
    python -m adb_copy.main
    ```
 
+## Key Features
+
+### File Transfer
+- **Drag & drop** - Drag files/folders between panels for instant transfer
+- **Windows Explorer** - Drag files from Explorer directly to remote panel
+- **Copy/Paste** - Use Ctrl+C/Ctrl+V to copy files between panels or from Explorer
+- **Folder transfer** - Automatically transfers all subfolders and files recursively
+
+### Navigation
+- **Back/Forward** - Navigate folder history with ◀ ▶ buttons
+- **Double-click** - Enter folders or go up with ".." entry
+- **Path bar** - Type path directly and press Enter
+
+### Transfer Queue
+- **Real-time progress** - See speed, elapsed time, and ETA
+- **Pause/Resume** - Control transfers at any time
+- **Retry failed** - Automatically retry failed transfers
+- **Sort & filter** - Click column headers to sort
+
 ## Building Executable
 
 ### Quick Start
@@ -71,11 +93,11 @@ build.bat
 
 **Single File:**
 - Executable: `dist/onefile/ADBCopy.exe`
-- Release package: `dist/onefile/ADBCopy_v0.1.0_Windows_Portable.zip`
+- Release package: `dist/onefile/ADBCopy_v0.1.1_Windows_Portable.zip`
 
 **Folder:**
 - Executable: `dist/folder/ADBCopy/ADBCopy.exe`
-- Release package: `dist/folder/ADBCopy_v0.1.0_Windows.zip`
+- Release package: `dist/folder/ADBCopy_v0.1.1.zip`
 
 See [RELEASE.md](RELEASE.md) for detailed release instructions.
 

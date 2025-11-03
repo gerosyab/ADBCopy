@@ -22,12 +22,14 @@ class RemoteFileInfo:
         size: File size (bytes). 0 for directories
         permissions: Permission string (e.g., "drwxr-xr-x")
         path: Full path
+        date: Modification date string (e.g., "2025-11-03 15:30")
     """
     name: str
     is_dir: bool
     size: int
     permissions: str
     path: str
+    date: str = ""
 
 
 class FileListWorker(QObject):
@@ -115,11 +117,11 @@ class FileListWorker(QObject):
             
             # Parse with regex
             # Permission (10 chars) + link count + owner + group + size + date + time + name
-            # Explicitly match date/time formats (YYYY-MM-DD HH:MM or Mon DD HH:MM or Mon DD YYYY)
+            # Capture date and time: YYYY-MM-DD HH:MM or Mon DD HH:MM or Mon DD YYYY
             match = re.match(
                 r"^([drwx-]{10})\s+\d+\s+\S+\s+\S+\s+(\d+)\s+"  # Permission~size
-                r"(?:\d{4}-\d{2}-\d{2}|\w{3}\s+\d{1,2})\s+"  # Date part
-                r"(?:\d{1,2}:\d{2}|\d{4})\s+"  # Time or year
+                r"(\d{4}-\d{2}-\d{2}|\w{3}\s+\d{1,2})\s+"  # Date part (captured)
+                r"(\d{1,2}:\d{2}|\d{4})\s+"  # Time or year (captured)
                 r"(.+)$",  # Filename (rest of line)
                 line,
             )
@@ -129,11 +131,16 @@ class FileListWorker(QObject):
             
             permissions = match.group(1)
             size = int(match.group(2))
-            name = match.group(3)
+            date_part = match.group(3)
+            time_part = match.group(4)
+            name = match.group(5)
             
             # Exclude . and ..
             if name in (".", ".."):
                 continue
+            
+            # Format date string
+            date_str = f"{date_part} {time_part}"
             
             is_dir = permissions.startswith("d")
             full_path = f"{base_path.rstrip('/')}/{name}"
@@ -144,6 +151,7 @@ class FileListWorker(QObject):
                 size=size,
                 permissions=permissions,
                 path=full_path,
+                date=date_str,
             ))
         
         # Sort: directories first, then by name

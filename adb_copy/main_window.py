@@ -175,15 +175,22 @@ class MainWindow(QMainWindow):
         # Language submenu
         language_menu = file_menu.addMenu(tr("Language"))
         
+        # Get current language
+        current_lang = get_language()
+        
         # English action
-        english_action = QAction(tr("English"), self)
-        english_action.triggered.connect(lambda: self._on_language_changed("en"))
-        language_menu.addAction(english_action)
+        self.english_action = QAction(tr("English"), self)
+        self.english_action.setCheckable(True)
+        self.english_action.setChecked(current_lang == "en")
+        self.english_action.triggered.connect(lambda: self._on_language_changed("en"))
+        language_menu.addAction(self.english_action)
         
         # Korean action
-        korean_action = QAction(tr("Korean"), self)
-        korean_action.triggered.connect(lambda: self._on_language_changed("ko"))
-        language_menu.addAction(korean_action)
+        self.korean_action = QAction(tr("Korean"), self)
+        self.korean_action.setCheckable(True)
+        self.korean_action.setChecked(current_lang == "ko")
+        self.korean_action.triggered.connect(lambda: self._on_language_changed("ko"))
+        language_menu.addAction(self.korean_action)
         
         file_menu.addSeparator()
         
@@ -312,6 +319,10 @@ class MainWindow(QMainWindow):
         set_config("language", language)
         set_language(language)
         
+        # Update menu checkmarks
+        self.english_action.setChecked(language == "en")
+        self.korean_action.setChecked(language == "ko")
+        
         # Show restart message
         lang_name = "English" if language == "en" else "한국어"
         msg = QMessageBox(self)
@@ -336,7 +347,7 @@ class MainWindow(QMainWindow):
         """Show about dialog."""
         about_text = """<h2>ADBCopy</h2>
 <p>ADB File Explorer with FileZilla-style UI</p>
-<p><b>Version:</b> 0.1.0</p>
+<p><b>Version:</b> 0.1.1</p>
 <p><b>GitHub:</b> <a href="https://github.com/gerosyab/ADBCopy">github.com/gerosyab/ADBCopy</a></p>
 <p><b>License:</b> MIT License</p>
 <hr>
@@ -410,23 +421,17 @@ class MainWindow(QMainWindow):
         
         print(f"[DEBUG] dest_path: {dest_path}")
         
-        # Separate files and folders
-        files_only = [f for f in self._drag_source_files if not f.get("is_dir", False)]
-        folders_only = [f for f in self._drag_source_files if f.get("is_dir", False)]
+        # All files and folders can be transferred
+        print(f"[DEBUG] Transfer items: {len(self._drag_source_files)} items")
         
-        print(f"[DEBUG] After folder filtering: {len(files_only)} files, {len(folders_only)} folders")
-        
-        if folders_only:
-            self.console.log_warning(f"{len(folders_only)} folders skipped (folder transfer not supported)")
-        
-        if not files_only:
-            self.console.log_warning("No transferable files")
+        if not self._drag_source_files:
+            self.console.log_warning(tr("No transferable files"))
             self._drag_source_files = []
             return
         
-        device_serial = files_only[0]["device_serial"]
-        print(f"[DEBUG] _add_transfer_tasks call: pull, {len(files_only)} files")
-        self._add_transfer_tasks("pull", files_only, dest_path, device_serial)
+        device_serial = self._drag_source_files[0]["device_serial"]
+        print(f"[DEBUG] _add_transfer_tasks call: pull, {len(self._drag_source_files)} items")
+        self._add_transfer_tasks("pull", self._drag_source_files, dest_path, device_serial)
         
         # Reset drag info
         self._drag_source_files = []
@@ -435,25 +440,31 @@ class MainWindow(QMainWindow):
         """File drop handler for remote panel.
         
         Args:
-            dropped_files: Dropped file info (unused, uses _drag_source_files instead)
+            dropped_files: Dropped file info (from Windows Explorer or internal drag)
         """
         print(f"[DEBUG] _on_files_dropped_to_remote called")
+        print(f"[DEBUG] dropped_files: {len(dropped_files) if dropped_files else 0}")
         print(f"[DEBUG] _drag_source_files: {len(self._drag_source_files) if self._drag_source_files else 0} files")
         
-        if not self._drag_source_files:
-            self.console.log_warning("No dragged file information")
+        # Use external files if provided (from Windows Explorer)
+        if dropped_files:
+            source_files = dropped_files
+        elif self._drag_source_files:
+            source_files = self._drag_source_files
+        else:
+            self.console.log_warning(tr("No dragged file information"))
             return
         
-        source_panel_type = self._drag_source_files[0]["panel_type"]
+        source_panel_type = source_files[0]["panel_type"]
         print(f"[DEBUG] source_panel_type: {source_panel_type}")
         
         # Ignore if dropped to same panel
         if source_panel_type == "remote":
-            self.console.log_debug("Dropped to same panel (ignored)")
+            self.console.log_debug(tr("Dropped to same panel (ignored)"))
             self._drag_source_files = []
             return
         
-        # Local → Remote
+        # Local → Remote (or Windows Explorer → Remote)
         dest_device = self.remote_panel.file_detail.current_device
         if not dest_device:
             QMessageBox.warning(self, tr("Transfer failed"), tr("No device connected"))
@@ -462,26 +473,20 @@ class MainWindow(QMainWindow):
         
         dest_path = self.remote_panel.file_detail.current_path
         if not dest_path:
-            dest_path = "/sdcard/"
+            dest_path = "/"
         
         print(f"[DEBUG] dest_path: {dest_path}")
         
-        # Separate files and folders
-        files_only = [f for f in self._drag_source_files if not f.get("is_dir", False)]
-        folders_only = [f for f in self._drag_source_files if f.get("is_dir", False)]
+        # All files and folders can be transferred
+        print(f"[DEBUG] Transfer items: {len(source_files)} items")
         
-        print(f"[DEBUG] After folder filtering: {len(files_only)} files, {len(folders_only)} folders")
-        
-        if folders_only:
-            self.console.log_warning(f"{len(folders_only)} folders skipped (folder transfer not supported)")
-        
-        if not files_only:
-            self.console.log_warning("No transferable files")
+        if not source_files:
+            self.console.log_warning(tr("No transferable files"))
             self._drag_source_files = []
             return
         
-        print(f"[DEBUG] _add_transfer_tasks call: push, {len(files_only)} files")
-        self._add_transfer_tasks("push", files_only, dest_path, dest_device.serial)
+        print(f"[DEBUG] _add_transfer_tasks call: push, {len(source_files)} items")
+        self._add_transfer_tasks("push", source_files, dest_path, dest_device.serial)
         
         # Reset drag info
         self._drag_source_files = []
@@ -514,9 +519,6 @@ class MainWindow(QMainWindow):
             path = name_item.data(Qt.ItemDataRole.UserRole)
             is_dir = name_item.data(Qt.ItemDataRole.UserRole + 1)
             
-            if is_dir:
-                continue  # Exclude folders
-            
             size_item = self.local_panel.file_detail.table.item(row, 1)
             size_str = size_item.text() if size_item else "0 B"
             size_bytes = self.local_panel.file_detail._parse_size(size_str)
@@ -525,16 +527,17 @@ class MainWindow(QMainWindow):
                 "path": path,
                 "name": Path(path).name,
                 "size": size_bytes,
+                "is_dir": is_dir,
                 "panel_type": "local",
                 "device_serial": None,
             }
             file_infos.append(file_info)
         
         if not file_infos:
-            QMessageBox.information(self, "Info", "No transferable files (folders are excluded)")
+            QMessageBox.information(self, tr("Info"), tr("Please select files to transfer from local panel."))
             return
         
-        dest_path = self.remote_panel.file_detail.current_path or "/sdcard/"
+        dest_path = self.remote_panel.file_detail.current_path or "/"
         self._add_transfer_tasks("push", file_infos, dest_path, dest_device.serial)
     
     def _on_pull_clicked(self) -> None:
@@ -565,9 +568,6 @@ class MainWindow(QMainWindow):
             path = name_item.data(Qt.ItemDataRole.UserRole)
             is_dir = name_item.data(Qt.ItemDataRole.UserRole + 1)
             
-            if is_dir:
-                continue  # Exclude folders
-            
             size_item = self.remote_panel.file_detail.table.item(row, 1)
             size_str = size_item.text() if size_item else "0 B"
             size_bytes = self.remote_panel.file_detail._parse_size(size_str)
@@ -576,13 +576,14 @@ class MainWindow(QMainWindow):
                 "path": path,
                 "name": Path(path).name,
                 "size": size_bytes,
+                "is_dir": is_dir,
                 "panel_type": "remote",
                 "device_serial": dest_device.serial,
             }
             file_infos.append(file_info)
         
         if not file_infos:
-            QMessageBox.information(self, "Info", "No transferable files (folders are excluded)")
+            QMessageBox.information(self, tr("Info"), tr("Please select files to transfer from remote panel."))
             return
         
         dest_path = self.local_panel.file_detail.current_path or str(Path.home())
@@ -653,6 +654,7 @@ class MainWindow(QMainWindow):
                     direction=direction,
                     device_serial=device_serial,
                     file_size=file_info.get("size", 0),
+                    is_dir=file_info.get("is_dir", False),
                 )
                 self.transfer_worker.add_task(task)
             

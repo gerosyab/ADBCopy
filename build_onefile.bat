@@ -1,6 +1,6 @@
 @echo off
 echo ========================================
-echo  Building ADBCopy v0.1.0 (Single File)
+echo  Building ADBCopy v0.1.1 (Single File)
 echo ========================================
 echo.
 echo Single file build: One .exe file (easy to distribute)
@@ -38,7 +38,7 @@ if errorlevel 1 (
 echo.
 echo Creating release package...
 cd dist\onefile
-powershell -Command "Compress-Archive -Path ADBCopy.exe -DestinationPath ADBCopy_v0.1.0_Windows_Portable.zip -Force"
+powershell -Command "Compress-Archive -Path ADBCopy.exe -DestinationPath ADBCopy_v0.1.1_Windows_Portable.zip -Force"
 cd ..\..
 
 echo.
@@ -48,7 +48,7 @@ echo ========================================
 echo.
 echo Output location: dist\onefile\
 echo Executable: dist\onefile\ADBCopy.exe
-echo Release package: dist\onefile\ADBCopy_v0.1.0_Windows_Portable.zip
+echo Release package: dist\onefile\ADBCopy_v0.1.1_Windows_Portable.zip
 echo.
 pause
 

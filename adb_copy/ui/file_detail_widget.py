@@ -4,9 +4,11 @@ Displays file/folder list of selected folder in a table.
 """
 
 from pathlib import Path
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QMimeData
-from PyQt6.QtGui import QDrag, QAction
+from datetime import datetime
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QMimeData, QUrl
+from PyQt6.QtGui import QDrag, QAction, QKeyEvent
 from PyQt6.QtWidgets import (
+    QApplication,
     QHeaderView,
     QInputDialog,
     QLabel,
@@ -21,6 +23,50 @@ from PyQt6.QtWidgets import (
 from adb_copy.core.adb_manager import AdbDevice, AdbManager
 from adb_copy.workers.file_list_worker import FileListWorker, RemoteFileInfo
 from adb_copy.i18n import tr
+
+
+class SortableTableWidgetItem(QTableWidgetItem):
+    """QTableWidgetItem that sorts by UserRole data instead of display text."""
+    
+    def __init__(self, text: str = "", sort_value=None):
+        """Initialize sortable item.
+        
+        Args:
+            text: Display text
+            sort_value: Value to use for sorting (stored in UserRole)
+        """
+        super().__init__(text)
+        if sort_value is not None:
+            self.setData(Qt.ItemDataRole.UserRole, sort_value)
+    
+    def __lt__(self, other):
+        """Compare items for sorting.
+        
+        Args:
+            other: Other item to compare
+            
+        Returns:
+            True if this item is less than other
+        """
+        # Try UserRole + 2 first (for Name column with special sort key)
+        my_data = self.data(Qt.ItemDataRole.UserRole + 2)
+        other_data = other.data(Qt.ItemDataRole.UserRole + 2)
+        
+        # If UserRole + 2 is empty, try UserRole
+        if my_data is None:
+            my_data = self.data(Qt.ItemDataRole.UserRole)
+            other_data = other.data(Qt.ItemDataRole.UserRole)
+        
+        # If both have sort data, use it
+        if my_data is not None and other_data is not None:
+            # Handle numeric comparison
+            if isinstance(my_data, (int, float)) and isinstance(other_data, (int, float)):
+                return my_data < other_data
+            # Handle string comparison
+            return str(my_data) < str(other_data)
+        
+        # Fallback to text comparison
+        return self.text() < other.text()
 
 
 class FileDetailWidget(QWidget):
@@ -59,8 +105,8 @@ class FileDetailWidget(QWidget):
         
         # Table widget
         self.table = QTableWidget()
-        self.table.setColumnCount(4)
-        self.table.setHorizontalHeaderLabels(["Name", "Size", "Permissions", "Type"])
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels([tr("Name"), tr("Size"), tr("Date"), tr("Permissions"), tr("Type")])
         
         # Column size adjustment
         header = self.table.horizontalHeader()
@@ -68,6 +114,7 @@ class FileDetailWidget(QWidget):
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         
         # Row selection mode
         self.table.setSelectionBehavior(
@@ -100,8 +147,17 @@ class FileDetailWidget(QWidget):
         # Selection change event
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
         
-        # Enable sorting
-        self.table.setSortingEnabled(True)
+        # Keyboard events (for copy/paste)
+        self.table.keyPressEvent = self._key_press_event
+        
+        # Custom sorting (to keep folders/files separated)
+        header = self.table.horizontalHeader()
+        header.setSortIndicatorShown(True)
+        header.sectionClicked.connect(self._on_header_clicked)
+        
+        # Track current sort state
+        self._current_sort_column = 0
+        self._current_sort_order = Qt.SortOrder.AscendingOrder
         
         # Improve hover/selection colors
         self.table.setStyleSheet("""
@@ -188,7 +244,8 @@ class FileDetailWidget(QWidget):
                 
                 self.table.setItem(row, 1, QTableWidgetItem(""))
                 self.table.setItem(row, 2, QTableWidgetItem(""))
-                self.table.setItem(row, 3, QTableWidgetItem("Parent"))
+                self.table.setItem(row, 3, QTableWidgetItem(""))
+                self.table.setItem(row, 4, QTableWidgetItem(tr("Parent")))
             
             # Get file list
             items = sorted(
@@ -198,33 +255,46 @@ class FileDetailWidget(QWidget):
             
             for item in items:
                 is_dir = item.is_dir()
-                size = 0 if is_dir else item.stat().st_size
+                stat_info = item.stat()
+                size = 0 if is_dir else stat_info.st_size
+                mtime = datetime.fromtimestamp(stat_info.st_mtime).strftime("%Y-%m-%d %H:%M")
                 
                 row = self.table.rowCount()
                 self.table.insertRow(row)
                 
                 # Name
-                name_item = QTableWidgetItem(
+                sort_key = f"0_{item.name.lower()}" if is_dir else f"1_{item.name.lower()}"
+                name_item = SortableTableWidgetItem(
                     f"📁 {item.name}" if is_dir else item.name
                 )
                 name_item.setData(Qt.ItemDataRole.UserRole, str(item))
                 name_item.setData(Qt.ItemDataRole.UserRole + 1, is_dir)
+                name_item.setData(Qt.ItemDataRole.UserRole + 2, sort_key)
                 self.table.setItem(row, 0, name_item)
                 
                 # Size
-                size_item = QTableWidgetItem(self._format_size(size))
+                size_item = SortableTableWidgetItem(self._format_size(size), size)
                 size_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 self.table.setItem(row, 1, size_item)
                 
+                # Date
+                date_item = SortableTableWidgetItem(mtime, stat_info.st_mtime)
+                self.table.setItem(row, 2, date_item)
+                
                 # Permissions
-                perm_item = QTableWidgetItem("Folder" if is_dir else "File")
-                self.table.setItem(row, 2, perm_item)
+                perm_item = SortableTableWidgetItem(
+                    tr("Folder") if is_dir else tr("File"),
+                    0 if is_dir else 1
+                )
+                self.table.setItem(row, 3, perm_item)
                 
                 # Type
-                type_item = QTableWidgetItem(
-                    "Folder" if is_dir else item.suffix or "-"
+                type_sort = f"0_{tr('Folder')}" if is_dir else f"1_{item.suffix or 'zzz'}"
+                type_item = SortableTableWidgetItem(
+                    tr("Folder") if is_dir else item.suffix or "-",
+                    type_sort
                 )
-                self.table.setItem(row, 3, type_item)
+                self.table.setItem(row, 4, type_item)
             
             # Update status bar
             self._update_status_bar()
@@ -311,34 +381,47 @@ class FileDetailWidget(QWidget):
             
             self.table.setItem(row, 1, QTableWidgetItem(""))
             self.table.setItem(row, 2, QTableWidgetItem(""))
-            self.table.setItem(row, 3, QTableWidgetItem("Parent"))
+            self.table.setItem(row, 3, QTableWidgetItem(""))
+            self.table.setItem(row, 4, QTableWidgetItem(tr("Parent")))
         
         for file_info in files:
             row = self.table.rowCount()
             self.table.insertRow(row)
             
             # Name
-            name_item = QTableWidgetItem(
+            sort_key = f"0_{file_info.name.lower()}" if file_info.is_dir else f"1_{file_info.name.lower()}"
+            name_item = SortableTableWidgetItem(
                 f"📁 {file_info.name}" if file_info.is_dir else file_info.name
             )
             name_item.setData(Qt.ItemDataRole.UserRole, file_info.path)
             name_item.setData(Qt.ItemDataRole.UserRole + 1, file_info.is_dir)
+            name_item.setData(Qt.ItemDataRole.UserRole + 2, sort_key)
             self.table.setItem(row, 0, name_item)
             
             # Size
-            size_item = QTableWidgetItem(self._format_size(file_info.size))
+            size_item = SortableTableWidgetItem(self._format_size(file_info.size), file_info.size)
             size_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self.table.setItem(row, 1, size_item)
             
+            # Date
+            date_item = SortableTableWidgetItem(file_info.date, file_info.date)
+            self.table.setItem(row, 2, date_item)
+            
             # Permissions
-            perm_item = QTableWidgetItem(file_info.permissions)
-            self.table.setItem(row, 2, perm_item)
+            perm_item = SortableTableWidgetItem(
+                file_info.permissions,
+                0 if file_info.is_dir else 1
+            )
+            self.table.setItem(row, 3, perm_item)
             
             # Type
-            type_item = QTableWidgetItem(
-                "Folder" if file_info.is_dir else Path(file_info.name).suffix or "-"
+            ext = Path(file_info.name).suffix if not file_info.is_dir else ""
+            type_sort = f"0_{tr('Folder')}" if file_info.is_dir else f"1_{ext or 'zzz'}"
+            type_item = SortableTableWidgetItem(
+                tr("Folder") if file_info.is_dir else Path(file_info.name).suffix or "-",
+                type_sort
             )
-            self.table.setItem(row, 3, type_item)
+            self.table.setItem(row, 4, type_item)
         
         # Update status bar
         self._update_status_bar()
@@ -363,6 +446,8 @@ class FileDetailWidget(QWidget):
         # Enter if folder (or .. item)
         if is_dir:
             print(f"[DEBUG] Folder double-clicked: {path}")
+            # Update current path immediately
+            self.current_path = path
             self.folder_double_clicked.emit(path)
     
     def _format_size(self, size: int) -> str:
@@ -461,6 +546,11 @@ class FileDetailWidget(QWidget):
         # Add application/x-adbcopy-files type (for our app only)
         mime_data.setData("application/x-adbcopy-files", paths_text.encode())
         
+        # Add file URLs for Windows Explorer compatibility (only for local panel)
+        if self.panel_type == "local":
+            urls = [QUrl.fromLocalFile(str(f["path"])) for f in file_infos]
+            mime_data.setUrls(urls)
+        
         drag.setMimeData(mime_data)
         
         print(f"[DEBUG] Before drag.exec call: supported_actions={supported_actions}")
@@ -508,9 +598,13 @@ class FileDetailWidget(QWidget):
         print(f"[DEBUG] file_detail._drag_enter_event: panel_type={self.panel_type}")
         print(f"[DEBUG] MIME formats: {event.mimeData().formats()}")
         
-        # Check if drag started from our app
+        # Check if drag started from our app or Windows Explorer
         if event.mimeData().hasFormat("application/x-adbcopy-files"):
             print("[DEBUG] application/x-adbcopy-files format detected - accept")
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
+        elif event.mimeData().hasUrls():
+            print("[DEBUG] URLs format detected (from Windows Explorer) - accept")
             event.setDropAction(Qt.DropAction.CopyAction)
             event.accept()
         elif event.mimeData().hasText():
@@ -529,7 +623,9 @@ class FileDetailWidget(QWidget):
         print(f"[DEBUG] file_detail._drag_move_event: panel_type={self.panel_type}")
         
         # Same logic as dragEnterEvent
-        if event.mimeData().hasFormat("application/x-adbcopy-files") or event.mimeData().hasText():
+        if (event.mimeData().hasFormat("application/x-adbcopy-files") or 
+            event.mimeData().hasUrls() or 
+            event.mimeData().hasText()):
             print("[DEBUG] dragMove accept")
             event.setDropAction(Qt.DropAction.CopyAction)
             event.accept()
@@ -545,6 +641,33 @@ class FileDetailWidget(QWidget):
         """
         print(f"[DEBUG] file_detail._drop_event: panel_type={self.panel_type}")
         
+        # Handle drops from Windows Explorer
+        if event.mimeData().hasUrls() and self.panel_type == "remote":
+            print("[DEBUG] Drop from Windows Explorer detected")
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
+            
+            # Extract file paths from URLs
+            external_files = []
+            for url in event.mimeData().urls():
+                if url.isLocalFile():
+                    file_path = Path(url.toLocalFile())
+                    external_files.append({
+                        "path": str(file_path),
+                        "name": file_path.name,
+                        "size": file_path.stat().st_size if file_path.is_file() else 0,
+                        "is_dir": file_path.is_dir(),
+                        "panel_type": "local",
+                        "device_serial": None,
+                    })
+            
+            if external_files:
+                # Emit as if dragged from local panel
+                self.files_dropped.emit(external_files)
+                print(f"[DEBUG] Dropped {len(external_files)} files from Windows Explorer")
+            return
+        
+        # Handle internal drops
         if event.mimeData().hasFormat("application/x-adbcopy-files") or event.mimeData().hasText():
             print("[DEBUG] Drop allowed")
             event.setDropAction(Qt.DropAction.CopyAction)
@@ -830,4 +953,205 @@ class FileDetailWidget(QWidget):
             
             status_text = ", ".join(parts) if parts else tr("0 selected")
             self.status_label.setText(status_text)
+    
+    def _on_header_clicked(self, column: int) -> None:
+        """Handle column header click for custom sorting.
+        
+        Args:
+            column: Clicked column index
+        """
+        # Toggle sort order if same column clicked
+        if self._current_sort_column == column:
+            if self._current_sort_order == Qt.SortOrder.AscendingOrder:
+                self._current_sort_order = Qt.SortOrder.DescendingOrder
+            else:
+                self._current_sort_order = Qt.SortOrder.AscendingOrder
+        else:
+            self._current_sort_column = column
+            self._current_sort_order = Qt.SortOrder.AscendingOrder
+        
+        # Update sort indicator
+        self.table.horizontalHeader().setSortIndicator(column, self._current_sort_order)
+        
+        # Perform custom sort
+        self._custom_sort(column, self._current_sort_order)
+    
+    def _custom_sort(self, column: int, order: Qt.SortOrder) -> None:
+        """Perform custom sorting that keeps folders and files separated.
+        
+        Args:
+            column: Column to sort by
+            order: Sort order (Ascending or Descending)
+        """
+        # Disable sorting to prevent conflicts
+        self.table.setSortingEnabled(False)
+        
+        # Collect all rows data (copy data, not references)
+        rows_data = []
+        for row in range(self.table.rowCount()):
+            row_data = []
+            for col in range(self.table.columnCount()):
+                item = self.table.item(row, col)
+                if item:
+                    # Store item data (not item reference)
+                    item_data = {
+                        'text': item.text(),
+                        'user_role': item.data(Qt.ItemDataRole.UserRole),
+                        'user_role_1': item.data(Qt.ItemDataRole.UserRole + 1),
+                        'user_role_2': item.data(Qt.ItemDataRole.UserRole + 2),
+                        'alignment': item.textAlignment(),
+                    }
+                    row_data.append(item_data)
+                else:
+                    row_data.append(None)
+            
+            # Get is_dir flag from first column
+            is_dir = row_data[0]['user_role_1'] if row_data[0] else False
+            
+            # Get sort key from target column
+            if column < len(row_data) and row_data[column]:
+                # Try UserRole + 2 first (Name column), then UserRole
+                sort_key = row_data[column]['user_role_2']
+                if sort_key is None:
+                    sort_key = row_data[column]['user_role']
+                if sort_key is None:
+                    sort_key = row_data[column]['text']
+            else:
+                sort_key = ""
+            
+            rows_data.append((row_data, is_dir, sort_key))
+        
+        # Separate folders and files
+        folders = [(data, sort_key) for data, is_dir, sort_key in rows_data if is_dir]
+        files = [(data, sort_key) for data, is_dir, sort_key in rows_data if not is_dir]
+        
+        # Sort each group
+        reverse = (order == Qt.SortOrder.DescendingOrder)
+        
+        # Sort with type-safe comparison
+        def safe_sort_key(x):
+            key = x[1]
+            # Convert to comparable type (str for consistent comparison)
+            if isinstance(key, (int, float)):
+                # Pad numbers to ensure proper sorting (e.g., 1 < 10 < 100)
+                return f"{key:020.2f}"
+            return str(key) if key is not None else ""
+        
+        folders.sort(key=safe_sort_key, reverse=reverse)
+        files.sort(key=safe_sort_key, reverse=reverse)
+        
+        # Combine: Ascending = folders first, Descending = files first
+        if order == Qt.SortOrder.AscendingOrder:
+            sorted_rows = folders + files
+        else:
+            sorted_rows = files + folders
+        
+        # Clear and repopulate table
+        self.table.setRowCount(0)
+        for row_data, _ in sorted_rows:
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            for col, item_data in enumerate(row_data):
+                if item_data:
+                    # Create new item from stored data
+                    new_item = SortableTableWidgetItem(item_data['text'])
+                    
+                    # Restore all data roles
+                    if item_data['user_role'] is not None:
+                        new_item.setData(Qt.ItemDataRole.UserRole, item_data['user_role'])
+                    if item_data['user_role_1'] is not None:
+                        new_item.setData(Qt.ItemDataRole.UserRole + 1, item_data['user_role_1'])
+                    if item_data['user_role_2'] is not None:
+                        new_item.setData(Qt.ItemDataRole.UserRole + 2, item_data['user_role_2'])
+                    
+                    # Restore text alignment
+                    if item_data['alignment']:
+                        new_item.setTextAlignment(item_data['alignment'])
+                    
+                    self.table.setItem(row, col, new_item)
+    
+    def _key_press_event(self, event: QKeyEvent) -> None:
+        """Keyboard event handler.
+        
+        Args:
+            event: QKeyEvent
+        """
+        # Ctrl+C: Copy selected files to clipboard
+        if event.key() == Qt.Key.Key_C and event.modifiers() == Qt.KeyboardModifier.ControlModifier:
+            self._copy_to_clipboard()
+            event.accept()
+            return
+        
+        # Ctrl+V: Paste from clipboard
+        if event.key() == Qt.Key.Key_V and event.modifiers() == Qt.KeyboardModifier.ControlModifier:
+            self._paste_from_clipboard()
+            event.accept()
+            return
+        
+        # Call default handler for other keys
+        QTableWidget.keyPressEvent(self.table, event)
+    
+    def _copy_to_clipboard(self) -> None:
+        """Copy selected files to clipboard."""
+        selected_rows = set(item.row() for item in self.table.selectedItems())
+        if not selected_rows:
+            return
+        
+        # Collect file paths
+        file_paths = []
+        for row in selected_rows:
+            name_item = self.table.item(row, 0)
+            if not name_item:
+                continue
+            
+            path = name_item.data(Qt.ItemDataRole.UserRole)
+            
+            # Exclude .. item
+            if path and ".." in str(path):
+                continue
+            
+            # Only local files can be copied to clipboard
+            if self.panel_type == "local":
+                file_paths.append(Path(path))
+        
+        if file_paths:
+            # Set URLs to clipboard
+            mime_data = QMimeData()
+            urls = [QUrl.fromLocalFile(str(p)) for p in file_paths]
+            mime_data.setUrls(urls)
+            
+            QApplication.clipboard().setMimeData(mime_data)
+            print(f"[DEBUG] Copied {len(file_paths)} files to clipboard")
+    
+    def _paste_from_clipboard(self) -> None:
+        """Paste files from clipboard."""
+        clipboard = QApplication.clipboard()
+        mime_data = clipboard.mimeData()
+        
+        if not mime_data.hasUrls():
+            return
+        
+        # Only paste to remote panel
+        if self.panel_type != "remote":
+            return
+        
+        # Extract file paths from clipboard
+        external_files = []
+        for url in mime_data.urls():
+            if url.isLocalFile():
+                file_path = Path(url.toLocalFile())
+                if file_path.exists():
+                    external_files.append({
+                        "path": str(file_path),
+                        "name": file_path.name,
+                        "size": file_path.stat().st_size if file_path.is_file() else 0,
+                        "is_dir": file_path.is_dir(),
+                        "panel_type": "local",
+                        "device_serial": None,
+                    })
+        
+        if external_files:
+            # Trigger drop event with external files
+            self.files_dropped.emit(external_files)
+            print(f"[DEBUG] Pasted {len(external_files)} files from clipboard")
 

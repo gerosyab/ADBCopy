@@ -173,22 +173,29 @@ class AdbManager:
         device_serial: str,
         remote_path: str,
         local_path: str,
+        is_dir: bool = False,
         timeout: int = 300,
     ) -> None:
-        """Pull file from device to local.
+        """Pull file or folder from device to local.
         
         Args:
             device_serial: Target device serial number
-            remote_path: File path on device
+            remote_path: File/folder path on device
             local_path: Local save path
+            is_dir: Whether it's a directory (will use -a option)
             timeout: Timeout (seconds). Default 300 seconds (5 minutes)
             
         Raises:
             subprocess.SubprocessError: When file transfer fails
         """
         try:
+            cmd = [self.adb_path, "-s", device_serial, "pull"]
+            if is_dir:
+                cmd.append("-a")  # Preserve file timestamp and mode for folders
+            cmd.extend([remote_path, local_path])
+            
             subprocess.run(
-                [self.adb_path, "-s", device_serial, "pull", remote_path, local_path],
+                cmd,
                 capture_output=True,
                 text=True,
                 encoding='utf-8',
@@ -208,22 +215,29 @@ class AdbManager:
         device_serial: str,
         local_path: str,
         remote_path: str,
+        is_dir: bool = False,
         timeout: int = 300,
     ) -> None:
-        """Push file from local to device.
+        """Push file or folder from local to device.
         
         Args:
             device_serial: Target device serial number
-            local_path: Local file path
+            local_path: Local file/folder path
             remote_path: Save path on device
+            is_dir: Whether it's a directory (will use -r option)
             timeout: Timeout (seconds). Default 300 seconds (5 minutes)
             
         Raises:
             subprocess.SubprocessError: When file transfer fails
         """
         try:
+            cmd = [self.adb_path, "-s", device_serial, "push"]
+            if is_dir:
+                cmd.append("-r")  # Recursive for folders
+            cmd.extend([local_path, remote_path])
+            
             subprocess.run(
-                [self.adb_path, "-s", device_serial, "push", local_path, remote_path],
+                cmd,
                 capture_output=True,
                 text=True,
                 encoding='utf-8',

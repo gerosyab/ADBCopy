@@ -46,6 +46,11 @@ class FolderTreeWidget(QWidget):
         self.panel_type = panel_type
         self.current_device: AdbDevice | None = None
         self._previous_path = ""
+        
+        # Navigation history
+        self._history_stack = []  # List of visited paths
+        self._history_index = -1  # Current position in history
+        
         self._init_ui()
     
     def _init_ui(self) -> None:
@@ -53,15 +58,33 @@ class FolderTreeWidget(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
         
-        # Path input area
+        # Path input area with navigation buttons
         path_layout = QHBoxLayout()
         
+        # Back button
+        self.back_button = QPushButton("◀")
+        self.back_button.setMaximumWidth(30)
+        self.back_button.setToolTip(tr("Back"))
+        self.back_button.clicked.connect(self._on_back_clicked)
+        self.back_button.setEnabled(False)
+        path_layout.addWidget(self.back_button)
+        
+        # Forward button
+        self.forward_button = QPushButton("▶")
+        self.forward_button.setMaximumWidth(30)
+        self.forward_button.setToolTip(tr("Forward"))
+        self.forward_button.clicked.connect(self._on_forward_clicked)
+        self.forward_button.setEnabled(False)
+        path_layout.addWidget(self.forward_button)
+        
+        # Path input
         self.path_edit = QLineEdit()
-        placeholder = tr("Local path...") if self.panel_type == "local" else "/sdcard/"
+        placeholder = tr("Local path...") if self.panel_type == "local" else "/"
         self.path_edit.setPlaceholderText(placeholder)
         self.path_edit.returnPressed.connect(self._on_path_entered)
         path_layout.addWidget(self.path_edit)
         
+        # Go button
         go_button = QPushButton(tr("Go"))
         go_button.clicked.connect(self._on_path_entered)
         go_button.setMaximumWidth(50)
@@ -103,7 +126,7 @@ class FolderTreeWidget(QWidget):
         if self.panel_type == "local":
             self._load_windows_drives()
         else:
-            self.path_edit.setText("/sdcard/")
+            self.path_edit.setText("/")
     
     def set_device(self, device: AdbDevice | None) -> None:
         """Set connected device for remote panel.
@@ -128,19 +151,31 @@ class FolderTreeWidget(QWidget):
         if not path:
             return
         
+        # Normalize path (ensure consistent slash handling)
+        if self.panel_type == "remote":
+            # For remote paths, ensure it doesn't end with / (unless it's root)
+            if path != "/" and path.endswith("/"):
+                path = path.rstrip("/")
+        else:
+            # For local paths, normalize using Path
+            path = str(Path(path))
+        
         # Save current path (for recovery on failure)
         previous_path = self.path_edit.text()
         
         if self.panel_type == "local":
             if not Path(path).exists():
-                QMessageBox.warning(self, "Path error", f"Path does not exist:\n{path}")
+                QMessageBox.warning(self, tr("Path error"), tr("Path does not exist:\n{0}").format(path))
                 self.path_edit.setText(previous_path)
                 return
-            self._load_local_root(path)
+            # Just navigate to path (don't rebuild tree)
+            self._add_to_history(path)
+            self.folder_selected.emit(path)
         else:
-            # Remote path validation is handled asynchronously
+            # Remote path - just navigate
             self._previous_path = previous_path
-            self._load_remote_root(path)
+            self._add_to_history(path)
+            self.folder_selected.emit(path)
     
     def _on_item_clicked(self, item: QTreeWidgetItem, column: int) -> None:
         """Called when tree item is clicked.
@@ -156,6 +191,7 @@ class FolderTreeWidget(QWidget):
             return
         
         if folder_path:
+            self._add_to_history(folder_path)
             self.folder_selected.emit(folder_path)
     
     def _on_item_expanded(self, item: QTreeWidgetItem) -> None:
@@ -438,4 +474,156 @@ class FolderTreeWidget(QWidget):
             print("[DEBUG] files_dropped signal emitted")
         else:
             print("[DEBUG] Drop rejected")
+    
+    def _add_to_history(self, path: str) -> None:
+        """Add path to navigation history.
+        
+        Args:
+            path: Path to add
+        """
+        # Don't add if it's the same as current
+        if self._history_stack and self._history_index >= 0:
+            if self._history_stack[self._history_index] == path:
+                return
+        
+        # Remove forward history when navigating to new path
+        if self._history_index < len(self._history_stack) - 1:
+            self._history_stack = self._history_stack[:self._history_index + 1]
+        
+        # Add new path
+        self._history_stack.append(path)
+        self._history_index = len(self._history_stack) - 1
+        
+        # Update button states
+        self._update_navigation_buttons()
+    
+    def _on_back_clicked(self) -> None:
+        """Back button click handler."""
+        if self._history_index > 0:
+            self._history_index -= 1
+            path = self._history_stack[self._history_index]
+            self.path_edit.setText(path)
+            self.folder_selected.emit(path)
+            self._update_navigation_buttons()
+    
+    def _on_forward_clicked(self) -> None:
+        """Forward button click handler."""
+        if self._history_index < len(self._history_stack) - 1:
+            self._history_index += 1
+            path = self._history_stack[self._history_index]
+            self.path_edit.setText(path)
+            self.folder_selected.emit(path)
+            self._update_navigation_buttons()
+    
+    def _update_navigation_buttons(self) -> None:
+        """Update back/forward button states."""
+        self.back_button.setEnabled(self._history_index > 0)
+        self.forward_button.setEnabled(self._history_index < len(self._history_stack) - 1)
+    
+    def expand_and_select_path(self, path: str) -> None:
+        """Expand tree to show and select the given path.
+        
+        Args:
+            path: Path to expand and select
+        """
+        if self.panel_type == "local":
+            self._expand_local_path(path)
+        else:
+            self._expand_remote_path(path)
+    
+    def _expand_local_path(self, path: str) -> None:
+        """Expand local tree to show path.
+        
+        Args:
+            path: Local path to expand to
+        """
+        # For local panel, tree structure is complex (My PC with special folders)
+        # Just update path input for now
+        self.path_edit.setText(path)
+    
+    def _expand_remote_path(self, path: str) -> None:
+        """Expand remote tree to show path.
+        
+        Args:
+            path: Remote path to expand to
+        """
+        if not self.current_device or not path:
+            return
+        
+        print(f"[DEBUG] _expand_remote_path called: {path}")
+        
+        # Recursively find and expand item
+        def find_and_expand(parent_item: QTreeWidgetItem, target_path: str) -> QTreeWidgetItem | None:
+            """Recursively find item and expand parents."""
+            # Check if this item matches
+            item_path = parent_item.data(0, Qt.ItemDataRole.UserRole)
+            
+            # Skip items without path (like "Loading...")
+            if item_path is None:
+                return None
+            
+            print(f"[DEBUG] Checking item: text='{parent_item.text(0)}', path='{item_path}', target='{target_path}'")
+            
+            if item_path == target_path:
+                print(f"[DEBUG] Found exact match!")
+                return parent_item
+            
+            # Expand this item if target path is under it
+            if target_path.startswith(item_path.rstrip('/') + '/'):
+                print(f"[DEBUG] Target is under this item, expanding...")
+                
+                # Expand if collapsed
+                if not parent_item.isExpanded():
+                    # Check for placeholder
+                    if parent_item.childCount() == 1 and parent_item.child(0).text(0) == "...":
+                        print(f"[DEBUG] Has placeholder, expanding to trigger load...")
+                        self.tree_widget.expandItem(parent_item)
+                        # Wait for lazy load (async operation needs time)
+                        from PyQt6.QtWidgets import QApplication
+                        import time
+                        for _ in range(10):  # Wait up to 1 second
+                            QApplication.processEvents()
+                            time.sleep(0.1)
+                            # Check if loading is done
+                            if parent_item.childCount() > 1 or (parent_item.childCount() == 1 and parent_item.child(0).text(0) != "Loading..."):
+                                break
+                        print(f"[DEBUG] After expansion, child count: {parent_item.childCount()}")
+                    else:
+                        parent_item.setExpanded(True)
+                
+                # Search in children (skip "Loading..." items)
+                for i in range(parent_item.childCount()):
+                    child = parent_item.child(i)
+                    # Skip loading/placeholder items
+                    if child.text(0) in ("...", "Loading..."):
+                        continue
+                    result = find_and_expand(child, target_path)
+                    if result:
+                        return result
+            
+            return None
+        
+        # Start search from root
+        if self.tree_widget.topLevelItemCount() > 0:
+            root_item = self.tree_widget.topLevelItem(0)
+            result = find_and_expand(root_item, path)
+            
+            if result:
+                # Expand final item if it has children
+                if not result.isExpanded() and result.childCount() > 0:
+                    if result.childCount() == 1 and result.child(0).text(0) == "...":
+                        self.tree_widget.expandItem(result)
+                    else:
+                        result.setExpanded(True)
+                
+                # Select and scroll
+                self.tree_widget.setCurrentItem(result)
+                self.tree_widget.scrollToItem(result)
+                print(f"[DEBUG] Selected and scrolled to: {result.text(0)}")
+            else:
+                print(f"[DEBUG] Path not found in tree: {path}")
+                self.path_edit.setText(path)
+        else:
+            print(f"[DEBUG] No top-level items in tree")
+            self.path_edit.setText(path)
 

@@ -1,6 +1,6 @@
 @echo off
 echo ========================================
-echo  Building ADBCopy v0.1.0
+echo  Building ADBCopy v0.1.1
 echo ========================================
 echo.
 
@@ -35,7 +35,7 @@ if errorlevel 1 (
 echo.
 echo Creating release package...
 cd dist\folder
-powershell -Command "Compress-Archive -Path ADBCopy -DestinationPath ADBCopy_v0.1.0_Windows.zip -Force"
+powershell -Command "Compress-Archive -Path ADBCopy -DestinationPath ADBCopy_v0.1.1_Windows.zip -Force"
 cd ..\..
 
 echo.
@@ -45,7 +45,7 @@ echo ========================================
 echo.
 echo Output location: dist\folder\ADBCopy\
 echo Executable: dist\folder\ADBCopy\ADBCopy.exe
-echo Release package: dist\folder\ADBCopy_v0.1.0_Windows.zip
+echo Release package: dist\folder\ADBCopy_v0.1.1_Windows.zip
 echo.
 echo You can now run: dist\folder\ADBCopy\ADBCopy.exe
 echo.

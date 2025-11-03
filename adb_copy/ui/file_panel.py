@@ -85,11 +85,18 @@ class FilePanel(QWidget):
         Args:
             folder_path: Double-clicked folder path
         """
-        # Update folder tree (if implementation needed)
+        # Add to navigation history
+        self.folder_tree._add_to_history(folder_path)
+        
+        # Expand and select in tree
+        self.folder_tree.expand_and_select_path(folder_path)
+        
+        # Update file detail
         self.file_detail.load_path(folder_path)
         self.path_changed.emit(folder_path)
 
     def _on_refresh_requested(self) -> None:
         """Refresh request handler."""
         if self.file_detail.current_path:
+            # Reload file list only (don't rebuild tree)
             self.file_detail.load_path(self.file_detail.current_path)

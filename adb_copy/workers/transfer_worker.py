@@ -24,6 +24,7 @@ class TransferTask:
         direction: Transfer direction ("push" or "pull")
         device_serial: Device serial number (for remote transfer)
         file_size: File size (bytes)
+        is_dir: Whether it's a directory
     """
     task_id: int
     filename: str
@@ -32,6 +33,7 @@ class TransferTask:
     direction: str  # "push" or "pull"
     device_serial: str
     file_size: int
+    is_dir: bool = False
 
 
 class TransferWorker(QObject):
@@ -168,6 +170,7 @@ class TransferWorker(QObject):
                 task.device_serial,
                 task.source_path,
                 task.destination_path,
+                is_dir=task.is_dir,
                 timeout=600,  # 10 minutes
             )
             print(f"[DEBUG] push_file completed")
@@ -207,6 +210,7 @@ class TransferWorker(QObject):
                 task.device_serial,
                 task.source_path,
                 task.destination_path,
+                is_dir=task.is_dir,
                 timeout=600,  # 10 minutes
             )
             print(f"[DEBUG] pull_file completed")
