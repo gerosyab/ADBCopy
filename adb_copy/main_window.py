@@ -345,9 +345,10 @@ class MainWindow(QMainWindow):
     
     def _show_about_dialog(self) -> None:
         """Show about dialog."""
-        about_text = """<h2>ADBCopy</h2>
+        from adb_copy import __version__
+        about_text = f"""<h2>ADBCopy</h2>
 <p>ADB File Explorer with FileZilla-style UI</p>
-<p><b>Version:</b> 0.1.1</p>
+<p><b>Version:</b> {__version__}</p>
 <p><b>GitHub:</b> <a href="https://github.com/gerosyab/ADBCopy">github.com/gerosyab/ADBCopy</a></p>
 <p><b>License:</b> MIT License</p>
 <hr>

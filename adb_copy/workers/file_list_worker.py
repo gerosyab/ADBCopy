@@ -71,12 +71,20 @@ class FileListWorker(QObject):
                 timeout=10,
             )
             
+            # DEBUG: Print raw output
+            print(f"[DEBUG] ls -la output for '{remote_path}':")
+            print(f"[DEBUG] Output length: {len(output) if output else 0}")
+            print(f"[DEBUG] Output:\n{output}")
+            
             # None check
             if output is None:
                 self.error_occurred.emit("File list retrieval failed: No output")
                 return
             
             files = self._parse_ls_output(output, remote_path)
+            print(f"[DEBUG] Parsed {len(files)} files")
+            for f in files:
+                print(f"[DEBUG]   - {f.name} (is_dir={f.is_dir})")
             self.files_loaded.emit(files)
             
         except subprocess.SubprocessError as e:
@@ -119,7 +127,7 @@ class FileListWorker(QObject):
             # Permission (10 chars) + link count + owner + group + size + date + time + name
             # Capture date and time: YYYY-MM-DD HH:MM or Mon DD HH:MM or Mon DD YYYY
             match = re.match(
-                r"^([drwx-]{10})\s+\d+\s+\S+\s+\S+\s+(\d+)\s+"  # Permission~size
+                r"^([drwxst-]{10})\s+\d+\s+\S+\s+\S+\s+(\d+)\s+"  # Permission~size (added 's' and 't' for special bits)
                 r"(\d{4}-\d{2}-\d{2}|\w{3}\s+\d{1,2})\s+"  # Date part (captured)
                 r"(\d{1,2}:\d{2}|\d{4})\s+"  # Time or year (captured)
                 r"(.+)$",  # Filename (rest of line)

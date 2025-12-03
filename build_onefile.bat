@@ -1,6 +1,10 @@
 @echo off
+
+REM Get version from Python
+for /f "delims=" %%i in ('python -c "import sys; sys.path.insert(0, '.'); from adb_copy import __version__; print(__version__)"') do set VERSION=%%i
+
 echo ========================================
-echo  Building ADBCopy v0.1.1 (Single File)
+echo  Building ADBCopy v%VERSION% (Single File)
 echo ========================================
 echo.
 echo Single file build: One .exe file (easy to distribute)
@@ -38,7 +42,7 @@ if errorlevel 1 (
 echo.
 echo Creating release package...
 cd dist\onefile
-powershell -Command "Compress-Archive -Path ADBCopy.exe -DestinationPath ADBCopy_v0.1.1_Windows_Portable.zip -Force"
+powershell -Command "Compress-Archive -Path ADBCopy.exe -DestinationPath ADBCopy_v%VERSION%_Windows_Portable.zip -Force"
 cd ..\..
 
 echo.
@@ -48,7 +52,7 @@ echo ========================================
 echo.
 echo Output location: dist\onefile\
 echo Executable: dist\onefile\ADBCopy.exe
-echo Release package: dist\onefile\ADBCopy_v0.1.1_Windows_Portable.zip
+echo Release package: dist\onefile\ADBCopy_v%VERSION%_Windows_Portable.zip
 echo.
 pause
 
