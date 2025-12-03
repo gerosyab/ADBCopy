@@ -57,8 +57,16 @@ Inspired by [AdbExplorer](https://github.com/gregko/AdbExplorer), this project i
    - Accept USB debugging permission on device
 
 3. **Run application**
+   
+   **Option A: Run from source (개발/테스트용)**
    ```bash
    python -m adb_copy.main
+   ```
+   
+   **Option B: Run built executable (배포용)**
+   ```bash
+   # After building
+   dist\folder\ADBCopy\ADBCopy.exe
    ```
 
 ## Key Features
@@ -110,6 +118,54 @@ See [RELEASE.md](RELEASE.md) for detailed release instructions.
 - **Top**: Console log showing transfer activity
 - **Middle**: Dual file panels (Local ↔ Remote)
 - **Bottom**: Transfer queue with progress tracking
+
+## Development
+
+### Running Tests
+
+Run integrated tests before building:
+
+```bash
+python run_tests.py
+```
+
+Tests include:
+- ADB connection and command execution
+- File list parsing (including setuid/setgid permissions)
+- Local drive loading (C:, D:, E: etc.)
+- Path handling and validation
+- UI component initialization
+- Version management
+
+### Version Management
+
+Version is centrally managed in `adb_copy/__init__.py`:
+
+```python
+__version__ = "0.1.2"
+```
+
+When you update the version, it automatically reflects in:
+- Build scripts output
+- About dialog
+- Release package filenames
+
+See [VERSION.md](VERSION.md) for details.
+
+### Project Structure
+
+```
+ADBCopy/
+├── adb_copy/              # Main application package
+│   ├── core/             # Core functionality (ADB manager)
+│   ├── ui/               # UI components
+│   ├── workers/          # Background workers
+│   └── resources/        # Icons and resources
+├── build.bat             # Build script (folder)
+├── build_onefile.bat     # Build script (single file)
+├── run_tests.py          # Integrated test suite
+└── README.md             # This file
+```
 
 ## License
 

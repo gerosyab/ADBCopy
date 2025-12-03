@@ -168,13 +168,15 @@ class FolderTreeWidget(QWidget):
                 QMessageBox.warning(self, tr("Path error"), tr("Path does not exist:\n{0}").format(path))
                 self.path_edit.setText(previous_path)
                 return
-            # Just navigate to path (don't rebuild tree)
+            # Navigate to path and expand tree
             self._add_to_history(path)
+            self.expand_and_select_path(path)  # Expand tree to show path
             self.folder_selected.emit(path)
         else:
-            # Remote path - just navigate
+            # Remote path - navigate and expand tree
             self._previous_path = previous_path
             self._add_to_history(path)
+            self.expand_and_select_path(path)  # Expand tree to show path
             self.folder_selected.emit(path)
     
     def _on_item_clicked(self, item: QTreeWidgetItem, column: int) -> None:
@@ -537,9 +539,110 @@ class FolderTreeWidget(QWidget):
         Args:
             path: Local path to expand to
         """
-        # For local panel, tree structure is complex (My PC with special folders)
-        # Just update path input for now
+        from PyQt6.QtWidgets import QApplication
+        import time
+        
+        print(f"[DEBUG] _expand_local_path called: {path}")
+        
+        # Update path input
         self.path_edit.setText(path)
+        
+        # Normalize path for comparison
+        target_path = str(Path(path))
+        
+        # Recursively find and expand item
+        def find_and_expand_local(parent_item: QTreeWidgetItem, target_path: str) -> QTreeWidgetItem | None:
+            """Recursively find item and expand parents in local tree."""
+            # Get stored path from UserRole
+            item_path = parent_item.data(0, Qt.ItemDataRole.UserRole)
+            
+            # Skip virtual nodes (like "My PC") with no path
+            if item_path is None:
+                # Search in children for virtual nodes
+                for i in range(parent_item.childCount()):
+                    child = parent_item.child(i)
+                    result = find_and_expand_local(child, target_path)
+                    if result:
+                        return result
+                return None
+            
+            # Normalize for comparison
+            item_path_normalized = str(Path(item_path))
+            
+            print(f"[DEBUG] Checking local item: text='{parent_item.text(0)}', path='{item_path_normalized}'")
+            
+            # Exact match
+            if item_path_normalized == target_path:
+                print(f"[DEBUG] Found exact match!")
+                return parent_item
+            
+            # Check if target is under this path
+            try:
+                # Use Path to check if target is relative to item_path
+                target_path_obj = Path(target_path)
+                item_path_obj = Path(item_path_normalized)
+                
+                # Check if target is under this item
+                if target_path_obj == item_path_obj or item_path_obj in target_path_obj.parents:
+                    print(f"[DEBUG] Target is under this item, expanding...")
+                    
+                    # Expand if collapsed
+                    if not parent_item.isExpanded():
+                        # Check for placeholder
+                        if parent_item.childCount() == 1 and parent_item.child(0).text(0) == "...":
+                            print(f"[DEBUG] Has placeholder, expanding to trigger load...")
+                            self.tree_widget.expandItem(parent_item)
+                            # Wait for lazy load
+                            for _ in range(10):
+                                QApplication.processEvents()
+                                time.sleep(0.05)
+                                if parent_item.childCount() > 1:
+                                    break
+                        else:
+                            parent_item.setExpanded(True)
+                    
+                    # Search in children
+                    for i in range(parent_item.childCount()):
+                        child = parent_item.child(i)
+                        if child.text(0) == "...":
+                            continue
+                        result = find_and_expand_local(child, target_path)
+                        if result:
+                            return result
+                    
+                    # If no child matched, this is as close as we can get
+                    return parent_item
+                    
+            except Exception as e:
+                print(f"[DEBUG] Error checking path relationship: {e}")
+            
+            return None
+        
+        # Start search from root (My PC)
+        if self.tree_widget.topLevelItemCount() > 0:
+            root_item = self.tree_widget.topLevelItem(0)
+            result = find_and_expand_local(root_item, target_path)
+            
+            if result:
+                # Expand final item if it has children
+                if not result.isExpanded() and result.childCount() > 0:
+                    if result.childCount() == 1 and result.child(0).text(0) == "...":
+                        self.tree_widget.expandItem(result)
+                        # Wait a bit for load
+                        for _ in range(5):
+                            QApplication.processEvents()
+                            time.sleep(0.05)
+                            if result.childCount() > 1:
+                                break
+                    else:
+                        result.setExpanded(True)
+                
+                # Select and scroll to item
+                self.tree_widget.setCurrentItem(result)
+                self.tree_widget.scrollToItem(result)
+                print(f"[DEBUG] Selected and scrolled to: {result.text(0)}")
+            else:
+                print(f"[DEBUG] Path not found in tree: {path}")
     
     def _expand_remote_path(self, path: str) -> None:
         """Expand remote tree to show path.

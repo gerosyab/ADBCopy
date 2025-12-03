@@ -136,17 +136,58 @@ To reduce size:
 3. Exclude more unnecessary modules in spec file
 4. Consider using Nuitka (advanced)
 
-## Testing the Build
+## Testing
 
-After building:
+### Before Building: Run Automated Tests
+
+**Always run tests before building to catch issues early:**
+
+```bash
+python run_tests.py
+```
+
+This runs comprehensive tests:
+- ✓ ADB connection and commands
+- ✓ File list parsing (setuid/setgid permissions)
+- ✓ Local drive loading (C:, D:, E: etc.)
+- ✓ Path handling
+- ✓ UI initialization
+- ✓ Version management
+
+**Expected output:**
+```
+============================================================
+테스트 결과 요약
+============================================================
+총 테스트: 15
+✓ 통과: 15
+✗ 실패: 0
+⊘ 스킵: 0
+```
+
+### After Building: Manual Testing
 
 1. Navigate to output folder
-2. Run `ADBCopy.exe`
-3. Test main features:
-   - Device connection
-   - File browsing
-   - File transfer
-   - Language switching
+2. Run `ADBCopy.exe` from terminal (to see debug output)
+3. Test critical features:
+   - [ ] Local drives (C:, D:, E:) load correctly
+   - [ ] Android device detection
+   - [ ] Remote folder navigation (/sdcard/)
+   - [ ] File transfer (both directions)
+   - [ ] Drag & drop
+   - [ ] Language switching
+
+### Development Testing (Without Building)
+
+For faster iteration during development:
+
+```bash
+# Run from source
+python -m adb_copy.main
+
+# Run specific tests
+python -c "from adb_copy.workers.file_list_worker import FileListWorker; w = FileListWorker(); print('OK')"
+```
 
 ## Distribution
 

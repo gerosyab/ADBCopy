@@ -220,6 +220,8 @@ class FileDetailWidget(QWidget):
             path: Local path to load
         """
         try:
+            print(f"[DEBUG] _load_local_files called with path: '{path}'")
+            print(f"[DEBUG] path type: {type(path)}, repr: {repr(path)}")
             path_obj = Path(path)
             
             if not path_obj.exists() or not path_obj.is_dir():
@@ -237,15 +239,17 @@ class FileDetailWidget(QWidget):
                 row = 0
                 self.table.insertRow(row)
                 
-                parent_item = QTableWidgetItem("📁 ..")
+                # Use special sort key to keep .. at top always
+                parent_item = SortableTableWidgetItem("📁 ..")
                 parent_item.setData(Qt.ItemDataRole.UserRole, str(path_obj.parent))
                 parent_item.setData(Qt.ItemDataRole.UserRole + 1, True)  # is_dir
+                parent_item.setData(Qt.ItemDataRole.UserRole + 2, "\x00")  # Always sort first
                 self.table.setItem(row, 0, parent_item)
                 
-                self.table.setItem(row, 1, QTableWidgetItem(""))
-                self.table.setItem(row, 2, QTableWidgetItem(""))
-                self.table.setItem(row, 3, QTableWidgetItem(""))
-                self.table.setItem(row, 4, QTableWidgetItem(tr("Parent")))
+                self.table.setItem(row, 1, SortableTableWidgetItem("", 0))
+                self.table.setItem(row, 2, SortableTableWidgetItem("", 0))
+                self.table.setItem(row, 3, SortableTableWidgetItem("", 0))
+                self.table.setItem(row, 4, SortableTableWidgetItem(tr("Parent"), "\x00"))
             
             # Get file list
             items = sorted(
@@ -373,16 +377,18 @@ class FileDetailWidget(QWidget):
             row = 0
             self.table.insertRow(row)
             
-            parent_item = QTableWidgetItem("📁 ..")
+            # Use special sort key to keep .. at top always
+            parent_item = SortableTableWidgetItem("📁 ..")
             parent_path = "/".join(self.current_path.rstrip("/").split("/")[:-1]) or "/"
             parent_item.setData(Qt.ItemDataRole.UserRole, parent_path)
             parent_item.setData(Qt.ItemDataRole.UserRole + 1, True)  # is_dir
+            parent_item.setData(Qt.ItemDataRole.UserRole + 2, "\x00")  # Always sort first
             self.table.setItem(row, 0, parent_item)
             
-            self.table.setItem(row, 1, QTableWidgetItem(""))
-            self.table.setItem(row, 2, QTableWidgetItem(""))
-            self.table.setItem(row, 3, QTableWidgetItem(""))
-            self.table.setItem(row, 4, QTableWidgetItem(tr("Parent")))
+            self.table.setItem(row, 1, SortableTableWidgetItem("", 0))
+            self.table.setItem(row, 2, SortableTableWidgetItem("", 0))
+            self.table.setItem(row, 3, SortableTableWidgetItem("", 0))
+            self.table.setItem(row, 4, SortableTableWidgetItem(tr("Parent"), "\x00"))
         
         for file_info in files:
             row = self.table.rowCount()
