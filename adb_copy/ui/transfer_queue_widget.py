@@ -4,13 +4,17 @@ Displays and manages ongoing file transfer tasks.
 """
 
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
+from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMenu,
+    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
     QProgressBar,
@@ -33,6 +37,7 @@ class TransferQueueWidget(QWidget):
     files_dropped = pyqtSignal(list)
     pause_clicked = pyqtSignal()
     retry_clicked = pyqtSignal()
+    tasks_removed = pyqtSignal(list)  # list[int] of removed task_ids
     
     def __init__(self) -> None:
         """Initialize TransferQueueWidget instance."""
@@ -106,9 +111,42 @@ class TransferQueueWidget(QWidget):
         self.retry_button.clicked.connect(self._on_retry_clicked)
         info_layout.addWidget(self.retry_button)
         
-        self.clear_button = QPushButton(tr("Clear Completed"))
-        self.clear_button.clicked.connect(self._on_clear_completed)
-        info_layout.addWidget(self.clear_button)
+        # Remove drop-down (replaces "Clear Completed")
+        self.remove_button = QToolButton()
+        self.remove_button.setText(tr("Remove") + " ▼")
+        self.remove_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.remove_menu = QMenu(self.remove_button)
+        
+        self.action_remove_selected = QAction(tr("Remove Selected"), self)
+        self.action_remove_selected.triggered.connect(self._remove_selected)
+        self.remove_menu.addAction(self.action_remove_selected)
+        
+        self.remove_menu.addSeparator()
+        
+        self.action_remove_completed = QAction(tr("Remove Completed"), self)
+        self.action_remove_completed.triggered.connect(self._remove_completed)
+        self.remove_menu.addAction(self.action_remove_completed)
+        
+        self.action_remove_failed = QAction(tr("Remove Failed"), self)
+        self.action_remove_failed.triggered.connect(self._remove_failed)
+        self.remove_menu.addAction(self.action_remove_failed)
+        
+        self.action_remove_waiting = QAction(tr("Remove Waiting"), self)
+        self.action_remove_waiting.triggered.connect(self._remove_waiting)
+        self.remove_menu.addAction(self.action_remove_waiting)
+        
+        self.action_remove_finished = QAction(tr("Remove Finished"), self)
+        self.action_remove_finished.triggered.connect(self._remove_finished)
+        self.remove_menu.addAction(self.action_remove_finished)
+        
+        self.remove_menu.addSeparator()
+        
+        self.action_remove_all = QAction(tr("Remove All"), self)
+        self.action_remove_all.triggered.connect(self._remove_all)
+        self.remove_menu.addAction(self.action_remove_all)
+        
+        self.remove_button.setMenu(self.remove_menu)
+        info_layout.addWidget(self.remove_button)
         
         layout.addLayout(info_layout)
         
@@ -128,11 +166,16 @@ class TransferQueueWidget(QWidget):
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)  # Time
         
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self.table.setAlternatingRowColors(True)
         # No max height limit (controlled by Splitter)
         
         # Enable sorting
         self.table.setSortingEnabled(True)
+        
+        # Context menu
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_context_menu)
         
         # Improve hover/selection colors
         self.table.setStyleSheet("""
@@ -350,21 +393,137 @@ class TransferQueueWidget(QWidget):
         if status_item:
             status_item.setText(tr("✗ Failed"))
     
-    def _on_clear_completed(self) -> None:
-        """Remove completed transfer items."""
-        rows_to_remove = []
+    def _remove_rows_by_filter(self, predicate) -> list:
+        """Remove rows where predicate(row, status_text, task_id) returns True.
+        
+        Always skips in-progress rows so the worker isn't disturbed.
+        Returns the list of removed task_ids.
+        """
+        in_progress_text = tr("⚡ Transferring")
+        rows_to_remove: list[int] = []
+        removed_ids: list[int] = []
         
         for row in range(self.table.rowCount()):
             status_item = self.table.item(row, 0)
-            if status_item and status_item.text() == tr("✓ Completed"):
+            if not status_item:
+                continue
+            text = status_item.text()
+            if text == in_progress_text:
+                continue  # never disturb a running transfer
+            task_id = status_item.data(Qt.ItemDataRole.UserRole)
+            if predicate(row, text, task_id):
                 rows_to_remove.append(row)
+                if task_id is not None:
+                    removed_ids.append(task_id)
+                # Also clean any tracked start time
+                self._task_start_times.pop(task_id, None)
         
-        # Remove in reverse order (prevent index changes)
         for row in reversed(rows_to_remove):
             self.table.removeRow(row)
         
-        # Update stats
         self._update_status_stats()
+        if removed_ids:
+            self.tasks_removed.emit(removed_ids)
+        return removed_ids
+    
+    def _has_in_progress(self) -> bool:
+        """Return True if any row is currently transferring."""
+        in_progress_text = tr("⚡ Transferring")
+        for row in range(self.table.rowCount()):
+            status_item = self.table.item(row, 0)
+            if status_item and status_item.text() == in_progress_text:
+                return True
+        return False
+    
+    def _count_in_progress(self) -> int:
+        in_progress_text = tr("⚡ Transferring")
+        n = 0
+        for row in range(self.table.rowCount()):
+            status_item = self.table.item(row, 0)
+            if status_item and status_item.text() == in_progress_text:
+                n += 1
+        return n
+    
+    def _selected_rows(self) -> set:
+        return set(item.row() for item in self.table.selectedItems())
+    
+    def _remove_selected(self) -> None:
+        rows = self._selected_rows()
+        if not rows:
+            return
+        self._remove_rows_by_filter(lambda r, text, tid: r in rows)
+    
+    def _remove_completed(self) -> None:
+        completed = tr("✓ Completed")
+        self._remove_rows_by_filter(lambda r, text, tid: text == completed)
+    
+    def _remove_failed(self) -> None:
+        failed = tr("✗ Failed")
+        self._remove_rows_by_filter(lambda r, text, tid: text == failed)
+    
+    def _remove_waiting(self) -> None:
+        waiting = tr("⏳ Waiting")
+        self._remove_rows_by_filter(lambda r, text, tid: text == waiting)
+    
+    def _remove_finished(self) -> None:
+        finished = {tr("✓ Completed"), tr("✗ Failed")}
+        self._remove_rows_by_filter(lambda r, text, tid: text in finished)
+    
+    def _remove_all(self) -> None:
+        in_progress = self._count_in_progress()
+        if in_progress > 0:
+            msg = tr("Remove all queued items?") + "\n\n" + tr("In-progress items will be kept ({0}).").format(in_progress)
+        else:
+            msg = tr("Remove all queued items?")
+        reply = QMessageBox.question(
+            self,
+            tr("Confirm Remove All"),
+            msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self._remove_rows_by_filter(lambda r, text, tid: True)
+    
+    # Backward-compat alias (kept in case external code calls it)
+    def _on_clear_completed(self) -> None:
+        self._remove_completed()
+    
+    def _show_context_menu(self, position) -> None:
+        """Right-click menu on the queue table."""
+        menu = QMenu(self)
+        has_selection = bool(self._selected_rows())
+        
+        sel_action = QAction(tr("Remove Selected"), self)
+        sel_action.setEnabled(has_selection)
+        sel_action.triggered.connect(self._remove_selected)
+        menu.addAction(sel_action)
+        
+        menu.addSeparator()
+        
+        comp_action = QAction(tr("Remove Completed"), self)
+        comp_action.triggered.connect(self._remove_completed)
+        menu.addAction(comp_action)
+        
+        fail_action = QAction(tr("Remove Failed"), self)
+        fail_action.triggered.connect(self._remove_failed)
+        menu.addAction(fail_action)
+        
+        wait_action = QAction(tr("Remove Waiting"), self)
+        wait_action.triggered.connect(self._remove_waiting)
+        menu.addAction(wait_action)
+        
+        fin_action = QAction(tr("Remove Finished"), self)
+        fin_action.triggered.connect(self._remove_finished)
+        menu.addAction(fin_action)
+        
+        menu.addSeparator()
+        
+        all_action = QAction(tr("Remove All"), self)
+        all_action.triggered.connect(self._remove_all)
+        menu.addAction(all_action)
+        
+        menu.exec(self.table.viewport().mapToGlobal(position))
     
     def _on_pause_clicked(self) -> None:
         """Pause/resume button click handler."""
@@ -406,7 +565,14 @@ class TransferQueueWidget(QWidget):
         # Buttons
         self.pause_button.setText(tr("Resume") if self._paused else tr("Pause"))
         self.retry_button.setText(tr("Retry Failed"))
-        self.clear_button.setText(tr("Clear Completed"))
+        # Remove drop-down
+        self.remove_button.setText(tr("Remove") + " ▼")
+        self.action_remove_selected.setText(tr("Remove Selected"))
+        self.action_remove_completed.setText(tr("Remove Completed"))
+        self.action_remove_failed.setText(tr("Remove Failed"))
+        self.action_remove_waiting.setText(tr("Remove Waiting"))
+        self.action_remove_finished.setText(tr("Remove Finished"))
+        self.action_remove_all.setText(tr("Remove All"))
         # Progress bar format
         self.global_progress_bar.setFormat(tr("Overall Progress") + ": %p%")
         

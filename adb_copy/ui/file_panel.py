@@ -3,12 +3,14 @@
 Panel that vertically combines folder tree and file detail view.
 """
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QEvent, pyqtSignal
+from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import QSplitter, QVBoxLayout, QWidget
 
 from adb_copy.core.adb_manager import AdbDevice
 from adb_copy.ui.folder_tree_widget import FolderTreeWidget
-from adb_copy.ui.file_detail_widget import FileDetailWidget
+from adb_copy.ui.file_detail_widget import FileDetailWidget, MY_PC_VIRTUAL_PATH
+from adb_copy.i18n import tr
 
 
 class FilePanel(QWidget):
@@ -55,6 +57,45 @@ class FilePanel(QWidget):
         splitter.setSizes([200, 400])
         
         layout.addWidget(splitter)
+        
+        # --- History navigation: keyboard + mouse XButton ---
+        # Keyboard: Alt+Left / Alt+Right (standard) + Backspace / media Back/Forward keys.
+        # WidgetWithChildrenShortcut so only the focused panel reacts.
+        for keys, handler in (
+            (QKeySequence("Alt+Left"), self.folder_tree._on_back_clicked),
+            (QKeySequence(Qt.Key.Key_Backspace), self.folder_tree._on_back_clicked),
+            (QKeySequence(Qt.Key.Key_Back), self.folder_tree._on_back_clicked),
+            (QKeySequence("Alt+Right"), self.folder_tree._on_forward_clicked),
+            (QKeySequence(Qt.Key.Key_Forward), self.folder_tree._on_forward_clicked),
+        ):
+            sc = QShortcut(keys, self)
+            sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            sc.activated.connect(handler)
+        
+        # Mouse: XButton1 / XButton2 anywhere inside the panel. QTableWidget
+        # and QTreeWidget consume their own mousePressEvent so we install
+        # an event filter on both the widgets and their viewports plus the
+        # path edit, covering every clickable region in the panel.
+        for w in (
+            self.file_detail.table,
+            self.file_detail.table.viewport(),
+            self.folder_tree.tree_widget,
+            self.folder_tree.tree_widget.viewport(),
+            self.folder_tree.path_edit,
+        ):
+            w.installEventFilter(self)
+    
+    def eventFilter(self, obj, event):
+        """Route mouse Back/Forward buttons to this panel's history."""
+        if event.type() == QEvent.Type.MouseButtonPress:
+            btn = event.button()
+            if btn == Qt.MouseButton.BackButton:
+                self.folder_tree._on_back_clicked()
+                return True
+            if btn == Qt.MouseButton.ForwardButton:
+                self.folder_tree._on_forward_clicked()
+                return True
+        return super().eventFilter(obj, event)
     
     def set_device(self, device: AdbDevice | None) -> None:
         """Set connected device for remote panel.
@@ -74,8 +115,11 @@ class FilePanel(QWidget):
         Args:
             folder_path: Selected folder path
         """
-        # Also update path input in folder tree
-        self.folder_tree.path_edit.setText(folder_path)
+        # Also update path input in folder tree (use friendly label for virtual path)
+        if folder_path == MY_PC_VIRTUAL_PATH:
+            self.folder_tree.path_edit.setText(tr("My PC"))
+        else:
+            self.folder_tree.path_edit.setText(folder_path)
         self.file_detail.load_path(folder_path)
         self.path_changed.emit(folder_path)
     
@@ -88,15 +132,22 @@ class FilePanel(QWidget):
         # Add to navigation history
         self.folder_tree._add_to_history(folder_path)
         
-        # Expand and select in tree
-        self.folder_tree.expand_and_select_path(folder_path)
+        # Expand and select in tree (skip for virtual paths)
+        if folder_path != MY_PC_VIRTUAL_PATH:
+            self.folder_tree.expand_and_select_path(folder_path)
+        else:
+            self.folder_tree.path_edit.setText(tr("My PC"))
         
         # Update file detail
         self.file_detail.load_path(folder_path)
         self.path_changed.emit(folder_path)
 
     def _on_refresh_requested(self) -> None:
-        """Refresh request handler."""
+        """Refresh request handler.
+        
+        Reloads file list AND syncs the matching tree branch so that
+        new/deleted/renamed folders show up immediately in the tree.
+        """
         if self.file_detail.current_path:
-            # Reload file list only (don't rebuild tree)
             self.file_detail.load_path(self.file_detail.current_path)
+            self.folder_tree.refresh_branch_at(self.file_detail.current_path)

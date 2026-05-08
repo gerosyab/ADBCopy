@@ -19,7 +19,10 @@ Inspired by [AdbExplorer](https://github.com/gregko/AdbExplorer), this project i
 - **Safe delete** - Choose between Trash (local) or Permanent delete with red warning
 - **Transfer queue** - Monitor multiple file transfers with real-time progress
 - **File management** - Create folders, rename, delete files on both panels
-- **Navigation history** - Back/forward buttons for easy browsing
+- **Navigation history** - Back/forward toolbar buttons, **Alt+Left/Right**, **Backspace**, and mouse **Back/Forward** (per panel when focused)
+- **My PC view** - Click **My PC** in the local tree to list special folders and drives in the file panel
+- **Transfer queue cleanup** - **Remove** menu (dropdown + right-click): selected / completed / failed / waiting / finished / all (in-progress rows are always kept; worker queue stays in sync)
+- **Tree sync** - File list changes (new folder, rename, delete) refresh the matching folder tree branch automatically
 - **Multi-language support** - English and Korean (한국어), switch instantly without restart
 - **Real-time monitoring** - Transfer speed, ETA, and file details with date/time
 - **Robust drive listing** - Handles Windows drive roots (C:\, D:\) gracefully even when special files (pagefile.sys, $Recycle.Bin) are present
@@ -99,7 +102,8 @@ Behavior:
 - Delete on remote panel is permanent only (Android `rm -rf`)
 
 ### Navigation
-- **Back/Forward** - Navigate folder history with ◀ ▶ buttons
+- **Back/Forward** - ◀ ▶ buttons plus **Alt+Left / Alt+Right**, **Backspace**, and mouse **Back / Forward** (XButton) when a panel has focus
+- **My PC** - Local tree root opens a virtual list of special folders and drive letters in the file panel
 - **Double-click** - Enter folders or go up with ".." entry
 - **Path bar** - Type path directly and press Enter
 
@@ -107,6 +111,7 @@ Behavior:
 - **Real-time progress** - See speed, elapsed time, and ETA
 - **Pause/Resume** - Control transfers at any time
 - **Retry failed** - Automatically retry failed transfers
+- **Remove** - Toolbar **Remove ▼** and table right-click: clear selected, completed, failed, waiting, finished, or all (rows in progress are never removed; pending worker tasks are dropped when rows are removed)
 - **Sort & filter** - Click column headers to sort
 
 ### Language
@@ -130,11 +135,11 @@ build.bat
 
 **Single File:**
 - Executable: `dist/onefile/ADBCopy.exe`
-- Release package: `dist/onefile/ADBCopy_v0.1.3_Windows_Portable.zip`
+- Release package: `dist/onefile/ADBCopy_v0.1.4_Windows_Portable.zip`
 
 **Folder:**
 - Executable: `dist/folder/ADBCopy/ADBCopy.exe`
-- Release package: `dist/folder/ADBCopy_v0.1.3.zip`
+- Release package: `dist/folder/ADBCopy_v0.1.4_Windows.zip`
 
 See [RELEASE.md](RELEASE.md) for detailed release instructions.
 
@@ -167,7 +172,7 @@ Tests include:
 Version is centrally managed in `adb_copy/__init__.py`:
 
 ```python
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 ```
 
 When you update the version, it automatically reflects in:

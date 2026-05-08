@@ -178,6 +178,7 @@ class MainWindow(QMainWindow):
         self.transfer_queue = TransferQueueWidget()
         self.transfer_queue.pause_clicked.connect(self._on_pause_transfer)
         self.transfer_queue.retry_clicked.connect(self._on_retry_transfer)
+        self.transfer_queue.tasks_removed.connect(self._on_queue_tasks_removed)
         self.transfer_queue.setMinimumHeight(120)  # Minimum height 120px
         main_splitter.addWidget(self.transfer_queue)
         
@@ -997,6 +998,20 @@ class MainWindow(QMainWindow):
         
         # Final refresh
         self._refresh_panels_after_transfer()
+    
+    def _on_queue_tasks_removed(self, task_ids: list) -> None:
+        """Sync queue-side row removals with the worker's pending queue.
+        
+        Drops still-pending tasks from the worker so they won't be processed
+        and clears any pending "open after transfer" registrations.
+        """
+        if not task_ids:
+            return
+        n = self.transfer_worker.remove_pending_tasks(task_ids)
+        if n:
+            self.console.log_info(f"Removed {n} pending tasks from worker queue")
+        for tid in task_ids:
+            self._open_after_transfer.pop(tid, None)
     
     def _on_pause_transfer(self) -> None:
         """Transfer pause/resume handler."""

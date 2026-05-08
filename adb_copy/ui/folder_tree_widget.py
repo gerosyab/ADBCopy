@@ -204,8 +204,14 @@ class FolderTreeWidget(QWidget):
         """
         folder_path = item.data(0, Qt.ItemDataRole.UserRole)
         
-        # Virtual nodes like "My PC" are None
+        # Virtual nodes (UserRole=None). My PC is the only such top-level
+        # node currently and is local-only. Render the virtual root view.
         if folder_path is None:
+            if self.panel_type == "local" and item.text(0) == "💻 My PC":
+                from adb_copy.ui.file_detail_widget import MY_PC_VIRTUAL_PATH
+                self._add_to_history(MY_PC_VIRTUAL_PATH)
+                self.path_edit.setText(tr("My PC"))
+                self.folder_selected.emit(MY_PC_VIRTUAL_PATH)
             return
         
         if folder_path:
@@ -730,16 +736,91 @@ class FolderTreeWidget(QWidget):
         else:
             self._load_remote_children(parent_item, parent_path)
     
+    def refresh_branch_at(self, path: str) -> None:
+        """Reload children of the tree node matching `path` if visible.
+        
+        Used when file_detail mutates the directory (new/delete/rename)
+        so the tree reflects the new structure without full rebuild.
+        Quietly no-op if the node is not currently in the visible tree
+        or if `path` is a virtual sentinel (e.g. My PC view).
+        """
+        if not path:
+            return
+        # Skip virtual paths
+        from adb_copy.ui.file_detail_widget import MY_PC_VIRTUAL_PATH
+        if path == MY_PC_VIRTUAL_PATH:
+            return
+        if self.tree_widget.topLevelItemCount() == 0:
+            return
+        
+        target = self._find_tree_item(path)
+        if target is None:
+            return
+        
+        was_expanded = target.isExpanded()
+        self._refresh_tree_branch(target)
+        if was_expanded:
+            target.setExpanded(True)
+    
+    def _find_tree_item(self, path: str) -> "QTreeWidgetItem | None":
+        """Locate the QTreeWidgetItem whose UserRole equals `path`.
+        
+        Walks the visible tree without forcing expansion. Returns None if
+        the path is not currently materialised in the tree.
+        """
+        if self.panel_type == "local":
+            try:
+                target_norm = str(Path(path))
+            except Exception:
+                target_norm = path
+        else:
+            target_norm = path.rstrip("/") or "/"
+        
+        def walk(item: QTreeWidgetItem):
+            item_path = item.data(0, Qt.ItemDataRole.UserRole)
+            if item_path is not None:
+                if self.panel_type == "local":
+                    try:
+                        cur = str(Path(item_path))
+                    except Exception:
+                        cur = item_path
+                else:
+                    cur = item_path.rstrip("/") or "/"
+                if cur == target_norm:
+                    return item
+            for i in range(item.childCount()):
+                child = item.child(i)
+                if child.text(0) in ("...", tr("Loading...")):
+                    continue
+                r = walk(child)
+                if r is not None:
+                    return r
+            return None
+        
+        for top_idx in range(self.tree_widget.topLevelItemCount()):
+            r = walk(self.tree_widget.topLevelItem(top_idx))
+            if r is not None:
+                return r
+        return None
+    
     def _retranslate_ui(self, _lang: str = "") -> None:
         """Refresh translatable text in this widget."""
         placeholder = tr("Local path...") if self.panel_type == "local" else "/"
         self.path_edit.setPlaceholderText(placeholder)
         self.back_button.setToolTip(tr("Back"))
         self.forward_button.setToolTip(tr("Forward"))
-        # Find Go button and update text - it's the last widget in path_layout
-        # Track via direct attribute (set in _init_ui below)
         if hasattr(self, "go_button"):
             self.go_button.setText(tr("Go"))
+        # If currently showing the My PC virtual view, refresh the visible
+        # path label to the new language.
+        try:
+            from adb_copy.ui.file_detail_widget import MY_PC_VIRTUAL_PATH
+            if (self._history_stack
+                and 0 <= self._history_index < len(self._history_stack)
+                and self._history_stack[self._history_index] == MY_PC_VIRTUAL_PATH):
+                self.path_edit.setText(tr("My PC"))
+        except Exception:
+            pass
     
     def _add_to_history(self, path: str) -> None:
         """Add path to navigation history.

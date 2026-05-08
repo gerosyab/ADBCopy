@@ -4,6 +4,7 @@ Processes file transfer tasks and reports progress in QThread.
 """
 
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -66,6 +67,9 @@ class TransferWorker(QObject):
         self.task_queue: list[TransferTask] = []
         self._running = False
         self._paused = False
+        # Protects task_queue against concurrent add/remove from the
+        # UI thread while the worker thread is consuming it.
+        self._queue_lock = threading.Lock()
     
     def add_task(self, task: TransferTask) -> None:
         """Add transfer task to queue.
@@ -73,7 +77,22 @@ class TransferWorker(QObject):
         Args:
             task: Transfer task
         """
-        self.task_queue.append(task)
+        with self._queue_lock:
+            self.task_queue.append(task)
+    
+    def remove_pending_tasks(self, task_ids) -> int:
+        """Drop pending (not-yet-popped) tasks whose id is in `task_ids`.
+        
+        Tasks already being processed are unaffected (they were already
+        popped off the queue). Returns number of removed tasks.
+        """
+        ids = set(task_ids)
+        if not ids:
+            return 0
+        with self._queue_lock:
+            before = len(self.task_queue)
+            self.task_queue = [t for t in self.task_queue if t.task_id not in ids]
+            return before - len(self.task_queue)
     
     def start_transfer(self) -> None:
         """Start transfer tasks.
@@ -83,7 +102,7 @@ class TransferWorker(QObject):
         print(f"[DEBUG] TransferWorker.start_transfer started, queue: {len(self.task_queue)} tasks")
         self._running = True
         
-        while self._running and self.task_queue:
+        while True:
             # Check for pause
             while self._paused and self._running:
                 time.sleep(0.1)
@@ -91,8 +110,11 @@ class TransferWorker(QObject):
             if not self._running:
                 break
             
-            # Get next task
-            task = self.task_queue.pop(0)
+            # Atomically pop next task (or stop if queue is empty)
+            with self._queue_lock:
+                if not self.task_queue:
+                    break
+                task = self.task_queue.pop(0)
             print(f"[DEBUG] Task processing started: task_id={task.task_id}, file={task.filename}")
             
             try:

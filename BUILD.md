@@ -194,7 +194,7 @@ python -c "from adb_copy.workers.file_list_worker import FileListWorker; w = Fil
 ### Recommended Structure
 
 ```
-ADBCopy_v0.1.3_Windows.zip
+ADBCopy_v0.1.4_Windows.zip
 ├── ADBCopy/              # Built application folder
 │   ├── ADBCopy.exe
 │   └── ...
@@ -216,13 +216,13 @@ ADBCopy_v0.1.3_Windows.zip
 
 ```bash
 # Tag version
-git tag -a v0.1.3 -m "Release v0.1.3"
-git push origin v0.1.3
+git tag -a v0.1.4 -m "Release v0.1.4"
+git push origin v0.1.4
 
 # Create release on GitHub with:
-# - Tag: v0.1.3
-# - Title: ADBCopy v0.1.3
+# - Tag: v0.1.4
+# - Title: ADBCopy v0.1.4
 # - Description: Release notes
-# - Attachment: ADBCopy_v0.1.3_Windows.zip
+# - Attachment: ADBCopy_v0.1.4_Windows.zip
 ```
 

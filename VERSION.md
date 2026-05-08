@@ -4,7 +4,7 @@
 버전은 `adb_copy/__init__.py`에서 관리됩니다.
 
 ```python
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 ```
 
 ## 버전 업데이트 방법

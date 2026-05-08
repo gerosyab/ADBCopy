@@ -4,6 +4,7 @@ Displays file/folder list of selected folder in a table.
 """
 
 import shutil
+import string
 from pathlib import Path
 from datetime import datetime
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QMimeData, QUrl
@@ -26,6 +27,12 @@ from adb_copy.workers.file_list_worker import FileListWorker, RemoteFileInfo
 from adb_copy.i18n import tr, get_translator
 from adb_copy.ui.delete_dialog import DeleteDialog
 from adb_copy.utils.system_open import open_in_default_app
+
+
+# Sentinel path representing the "My PC" virtual root view.
+# Uses '<>' which are forbidden in Windows filesystem paths so it can
+# never collide with a real local path.
+MY_PC_VIRTUAL_PATH = "<MyPC>"
 
 
 class SortableTableWidgetItem(QTableWidgetItem):
@@ -234,10 +241,59 @@ class FileDetailWidget(QWidget):
         print(f"[DEBUG] load_path called: {path}, panel={self.panel_type}")
         self.current_path = path
         
+        # Special: My PC virtual view (drives + special folders)
+        if self.panel_type == "local" and path == MY_PC_VIRTUAL_PATH:
+            self._load_my_pc_view()
+            return
+        
         if self.panel_type == "local":
             self._load_local_files(path)
         else:
             self._load_remote_files(path)
+    
+    def _load_my_pc_view(self) -> None:
+        """Render the My PC virtual root: special folders + drive letters.
+        
+        Each row's UserRole holds the real path, so double-click and drag
+        behave like normal folders. There is no parent ".." item.
+        """
+        self._hide_error()
+        self.table.setSortingEnabled(False)
+        self.table.setRowCount(0)
+        
+        home = Path.home()
+        # (sort_group, name, path, icon)
+        entries: list[tuple[int, str, Path, str]] = []
+        for sub in ("Desktop", "Documents", "Downloads", "Pictures", "Music", "Videos"):
+            p = home / sub
+            if p.exists():
+                entries.append((0, sub, p, "📁"))
+        for letter in string.ascii_uppercase:
+            p = Path(f"{letter}:\\")
+            if p.exists():
+                entries.append((1, f"{letter}:\\", p, "💾"))
+        
+        for group, name, p, icon in entries:
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            sort_key = f"{group}_{name.lower()}"
+            
+            name_item = SortableTableWidgetItem(f"{icon} {name}")
+            name_item.setData(Qt.ItemDataRole.UserRole, str(p))
+            name_item.setData(Qt.ItemDataRole.UserRole + 1, True)  # is_dir
+            name_item.setData(Qt.ItemDataRole.UserRole + 2, sort_key)
+            self.table.setItem(row, 0, name_item)
+            
+            # Empty stat columns
+            self.table.setItem(row, 1, SortableTableWidgetItem("", 0))
+            self.table.setItem(row, 2, SortableTableWidgetItem("", 0))
+            self.table.setItem(row, 3, SortableTableWidgetItem(tr("Folder"), 0))
+            
+            type_item = SortableTableWidgetItem(tr("Folder"), sort_key)
+            self.table.setItem(row, 4, type_item)
+        
+        self._update_status_bar()
+        self.table.setSortingEnabled(True)
     
     def _load_local_files(self, path: str) -> None:
         """Load file list of local path.
@@ -791,10 +847,14 @@ class FileDetailWidget(QWidget):
         any_dir = any(f["is_dir"] for f in selected_infos)
         all_files = bool(selected_infos) and not any_dir
         
+        is_my_pc = self.current_path == MY_PC_VIRTUAL_PATH
+        
         if self.panel_type == "local":
-            # PUSH
+            # PUSH (disabled in My PC virtual view: pushing whole drives is unsafe)
             push_action = QAction(tr("PUSH"), self)
-            push_action.setEnabled(bool(selected_infos) and self._has_remote_device())
+            push_action.setEnabled(
+                not is_my_pc and bool(selected_infos) and self._has_remote_device()
+            )
             push_action.triggered.connect(self._on_menu_push)
             menu.addAction(push_action)
             
@@ -808,20 +868,21 @@ class FileDetailWidget(QWidget):
             
             menu.addSeparator()
             
-            # Make Directory (in current folder)
+            # Make Directory (disabled in My PC view: not a real directory)
             new_folder_action = QAction(tr("Make Directory"), self)
+            new_folder_action.setEnabled(not is_my_pc)
             new_folder_action.triggered.connect(self._on_create_folder_local)
             menu.addAction(new_folder_action)
             
-            # Rename - single only
+            # Rename - single only, not in My PC
             rename_action = QAction(tr("Rename"), self)
-            rename_action.setEnabled(single)
+            rename_action.setEnabled(single and not is_my_pc)
             rename_action.triggered.connect(self._on_rename_local)
             menu.addAction(rename_action)
             
-            # Delete
+            # Delete - not in My PC
             delete_action = QAction(tr("Delete"), self)
-            delete_action.setEnabled(bool(selected_infos))
+            delete_action.setEnabled(bool(selected_infos) and not is_my_pc)
             delete_action.triggered.connect(self._on_delete_local)
             menu.addAction(delete_action)
         

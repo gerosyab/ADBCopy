@@ -9,7 +9,7 @@ build_onefile.bat
 
 **Output:**
 - `dist/onefile/ADBCopy.exe` (~100MB)
-- `dist/onefile/ADBCopy_v0.1.3_Windows_Portable.zip`
+- `dist/onefile/ADBCopy_v0.1.4_Windows_Portable.zip`
 
 **For:** Users who want single .exe file
 
@@ -22,7 +22,7 @@ build.bat
 
 **Output:**
 - `dist/folder/ADBCopy/` (folder with ADBCopy.exe + DLLs)
-- `dist/folder/ADBCopy_v0.1.3_Windows.zip`
+- `dist/folder/ADBCopy_v0.1.4_Windows.zip`
 
 **For:** Users who prefer faster startup
 
@@ -34,93 +34,68 @@ build.bat
 ```bash
 # Ensure all changes are committed
 git add .
-git commit -m "Release v0.1.3"
+git commit -m "Release v0.1.4"
 
 # Create tag
-git tag -a v0.1.3 -m "Release v0.1.3 - Bug fixes & UX improvements"
+git tag -a v0.1.4 -m "Release v0.1.4 - Navigation, queue UX & tree sync"
 
 # Push to GitHub
 git push origin main
-git push origin v0.1.3
+git push origin v0.1.4
 ```
 
 ### 2. Create GitHub Release
 
 1. Go to: https://github.com/gerosyab/ADBCopy/releases/new
-2. **Tag:** v0.1.3
-3. **Title:** ADBCopy v0.1.3
+2. **Tag:** v0.1.4
+3. **Title:** ADBCopy v0.1.4
 4. **Description:**
    ```markdown
-   # 🚀 ADBCopy v0.1.3 - Bug Fixes & UX Improvements
+   # 🚀 ADBCopy v0.1.4 — Navigation, queue cleanup & tree sync
 
    A simple ADB file explorer with FileZilla-style UI.
 
-   ## 🐛 Bug Fixes
+   ## 🆕 What's new in v0.1.4
 
-   - **Drive root listing crash** - Loading `D:\`, `E:\` etc. no longer crashes when special files such as `pagefile.sys`, `$Recycle.Bin`, or `System Volume Information` are present. Per-item `WinError 2`/permission errors are now skipped gracefully so the rest of the listing still appears.
-   - **Error display overlay** - When a directory fails to load, the error message is shown as a non-interactive overlay instead of a fake table row. Right-click and other actions are blocked while the overlay is visible, eliminating crashes from interacting with bogus rows.
-   - **Folder transfer queue tracking** - Pulling/pushing a folder now expands into individual per-file tasks in the transfer queue. Progress, ETA, transfer speed, and elapsed time are now calculated correctly even for deep folder trees. Parent directories on the destination are auto-created (`mkdir -p` for remote, `os.makedirs` for local).
-   - **Symlinks & SELinux ACL** - `ls -la` parser now recognizes symlinks (`l` permissions) and SELinux ACL markers, fixing edge cases where some Android entries were silently dropped.
+   - **Folder tree sync** — Create / rename / delete from the file list refreshes the matching branch in the folder tree so you do not need a manual tree refresh.
+   - **My PC view** — Select **My PC** in the local tree to show special folders (Desktop, Documents, …) and drive letters in the file panel; open entries as usual.
+   - **Transfer queue: Remove** — Toolbar **Remove ▼** and table right-click: remove selected, completed, failed, waiting, finished (completed+failed), or all. In-progress rows are never removed; pending tasks are dropped from the worker queue in sync (`tasks_removed` + thread-safe queue lock).
+   - **History navigation** — **Alt+Left / Alt+Right**, **Backspace**, and mouse **Back / Forward** (XButton) when the local or remote panel has focus, in addition to the ◀ ▶ toolbar buttons.
 
-   ## 🆕 What's New in v0.1.3
+   ## 🐛 Reliability (recent releases)
 
-   - 🖱️ **Unified context menu** on both panels:
-     - **Local panel:** PUSH / Open / Make Directory / Rename / Delete
-     - **Remote panel:** PULL / Open / Make Directory / Rename / Delete
-     - Open on remote panel is disabled when any folder is selected
-     - Rename is enabled only for single selections
-   - 📂 **Local file/folder operations** - Delete, New Folder, and Rename are now available on the local panel (previously remote-only)
-   - 🗑️ **Safe delete dialog** - Local delete asks **Trash vs Permanent** with a red "cannot be undone" warning. Falls back to permanent delete if Trash is unsupported on the platform.
-   - 👁️ **Open files cross-platform**:
-     - Local files open in the OS default viewer/Explorer
-     - Remote files automatically download to `~/.adbcopy/temp/` and then open (uses transfer queue, so progress is visible)
-     - Multi-selection opens each item individually
-   - 🌐 **Instant language switch** - Switching between English / 한국어 in `File → Language` now updates all UI text immediately. No restart required.
-   - 🪟 **Folder tree right-click menu** - Same unified actions are available from the folder tree on either side, including PUSH/PULL of the right-clicked folder.
+   - Windows drive roots (`C:\`, `D:\`, …) skip per-item permission / `WinError 2` issues instead of failing the whole listing.
+   - Directory load errors use a blocking overlay instead of fake table rows.
+   - Folder PUSH/PULL expands to per-file queue rows with correct progress, ETA, and auto-created parent dirs on the destination.
+   - `ls -la` parsing handles symlinks and SELinux ACL markers.
 
-   ## ⚙️ Internal Improvements
+   ## ✨ Other capabilities (summary)
 
-   - i18n system migrated from a one-shot lookup to a weak-ref dispatcher so widgets can register listeners without leaking
-   - Folder expansion uses `ls -laR` on the device for fast recursive listing
-   - Worker creates missing parent directories before each transfer to keep folder structure intact
-
-   ## Features
-   - 📁 Dual-panel file browser (Local ↔ Remote)
-   - 🎯 Drag & drop file/folder transfer (recursive, per-file progress)
-   - 🪟 Windows Explorer integration (drag from Explorer, copy/paste)
-   - 🖱️ Unified right-click context menus on both panels
-   - 👁️ Open files in default viewer (remote: download-to-temp then open)
-   - 🗑️ Safe delete (Trash vs Permanent for local files)
-   - 📊 Transfer queue with real-time progress tracking
-   - 🛠️ File management (create, rename, delete) on both panels
-   - ◀▶ Navigation history (back/forward buttons)
-   - 🌍 Multi-language support (English, 한국어) with instant switching
-   - ⚡ Real-time transfer speed, ETA, and file details with date/time
+   - Dual local ↔ remote panels, drag-drop, Explorer integration, unified context menus on panels and tree
+   - Open remote files via `~/.adbcopy/temp/`; local delete with Trash vs permanent choice
+   - English / 한국어 instant language switch (weak-ref i18n listeners)
 
    ## Downloads
 
-   **Portable (Recommended):**
-   - Single .exe file, no installation required
-   - Slower first startup (~5-10 seconds)
-
-   **Standard:**
-   - Folder with multiple files
-   - Faster startup (~2-3 seconds)
+   **Portable (recommended):** single `.exe`, slower cold start (~5–10 s).  
+   **Standard:** folder build, faster start (~2–3 s).
 
    ## Requirements
-   - Windows 10 or higher (Linux/macOS supported when running from source)
-   - Android device with USB debugging enabled
-   - ADB (Android Debug Bridge) in system PATH
+
+   - Windows 10+ for the prebuilt binaries (Linux/macOS from source)
+   - USB debugging enabled on the device; `adb` on PATH
 
    ## Usage
-   1. Download and extract
-   2. Run ADBCopy.exe
-   3. Connect your Android device via USB
-   4. Start transferring files!
 
-   ## Upgrade Notes
-   - No configuration migration required from v0.1.2
-   - First "Open" on a remote file creates `~/.adbcopy/temp/` (kept persistent so default-app caches keep working between sessions)
+   1. Download and extract  
+   2. Run `ADBCopy.exe`  
+   3. Connect the device via USB  
+   4. Transfer files
+
+   ## Upgrade notes
+
+   - No config migration needed from **v0.1.3**.
+   - First remote **Open** still uses persistent `~/.adbcopy/temp/` for default-app caching.
 
    ---
 
@@ -128,8 +103,8 @@ git push origin v0.1.3
    ```
 
 5. **Upload Files:**
-   - `dist/onefile/ADBCopy_v0.1.3_Windows_Portable.zip`
-   - `dist/folder/ADBCopy_v0.1.3_Windows.zip`
+   - `dist/onefile/ADBCopy_v0.1.4_Windows_Portable.zip`
+   - `dist/folder/ADBCopy_v0.1.4_Windows.zip`
 
 6. Click **Publish release**
 
@@ -188,12 +163,12 @@ git push origin v0.1.3
 dist/
 ├── onefile/
 │   ├── ADBCopy.exe                              # Single file
-│   └── ADBCopy_v0.1.3_Windows_Portable.zip      # Release package
+│   └── ADBCopy_v0.1.4_Windows_Portable.zip      # Release package
 └── folder/
     ├── ADBCopy/                                 # Folder build
     │   ├── ADBCopy.exe
     │   └── ... (DLLs and resources)
-    └── ADBCopy_v0.1.3_Windows.zip               # Release package
+    └── ADBCopy_v0.1.4_Windows.zip               # Release package
 ```
 
 ---
