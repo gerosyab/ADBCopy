@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
     QProgressBar,
 )
 
-from adb_copy.i18n import tr
+from adb_copy.i18n import tr, get_translator
 
 
 class TransferQueueWidget(QWidget):
@@ -45,6 +45,9 @@ class TransferQueueWidget(QWidget):
         self._update_timer = QTimer(self)
         self._update_timer.timeout.connect(self._update_status_stats)
         self._update_timer.start(1000)  # Update every 1 second
+        
+        # Live language switching
+        get_translator().add_language_listener(self._retranslate_ui)
     
     def _init_ui(self) -> None:
         """Initialize UI."""
@@ -393,6 +396,51 @@ class TransferQueueWidget(QWidget):
             enabled: Enable status
         """
         self.retry_button.setEnabled(enabled)
+    
+    def _retranslate_ui(self, _lang: str = "") -> None:
+        """Refresh translatable UI text after a language change."""
+        # Column headers
+        self.table.setHorizontalHeaderLabels([
+            tr("Status"), tr("Filename"), tr("Source"), tr("Destination"), tr("Time(sec)"),
+        ])
+        # Buttons
+        self.pause_button.setText(tr("Resume") if self._paused else tr("Pause"))
+        self.retry_button.setText(tr("Retry Failed"))
+        self.clear_button.setText(tr("Clear Completed"))
+        # Progress bar format
+        self.global_progress_bar.setFormat(tr("Overall Progress") + ": %p%")
+        
+        # Re-translate per-row Status column. Status cells store the
+        # human-readable label, so we rewrite them based on a tag column
+        # Inferred from the previous text in any language.
+        status_map_en = {
+            "⏳ Waiting": tr("⏳ Waiting"),
+            "⚡ Transferring": tr("⚡ Transferring"),
+            "✓ Completed": tr("✓ Completed"),
+            "✗ Failed": tr("✗ Failed"),
+        }
+        # Build reverse dict: any prior text -> emoji-prefixed key -> new translated
+        # Emojis are language-independent so we can detect by the leading emoji.
+        prefix_to_key = {
+            "⏳": "⏳ Waiting",
+            "⚡": "⚡ Transferring",
+            "✓": "✓ Completed",
+            "✗": "✗ Failed",
+        }
+        for row in range(self.table.rowCount()):
+            status_item = self.table.item(row, 0)
+            if not status_item:
+                continue
+            cur = status_item.text()
+            if not cur:
+                continue
+            for prefix, key in prefix_to_key.items():
+                if cur.startswith(prefix):
+                    status_item.setText(status_map_en[key])
+                    break
+        
+        # Refresh stats (status_label, global_progress_label)
+        self._update_status_stats()
     
     def _update_status_stats(self) -> None:
         """Update top status statistics."""

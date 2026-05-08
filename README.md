@@ -12,13 +12,17 @@ Inspired by [AdbExplorer](https://github.com/gregko/AdbExplorer), this project i
 
 - **Dual-panel interface** - Local and remote file systems side-by-side
 - **Drag & drop** - Easy file/folder transfers between panels
-- **Folder transfer** - Recursive folder synchronization support
+- **Folder transfer** - Recursive folder synchronization with per-file progress
 - **Windows Explorer integration** - Drag from Explorer or copy/paste files
+- **Unified context menu** - Same actions on both panels (PUSH/PULL, Open, New Folder, Delete, Rename)
+- **Open files** - Launch local files in default viewer; remote files auto-download to temp and open
+- **Safe delete** - Choose between Trash (local) or Permanent delete with red warning
 - **Transfer queue** - Monitor multiple file transfers with real-time progress
-- **File management** - Create folders, rename, delete files on Android devices
+- **File management** - Create folders, rename, delete files on both panels
 - **Navigation history** - Back/forward buttons for easy browsing
-- **Multi-language support** - English and Korean (한국어)
+- **Multi-language support** - English and Korean (한국어), switch instantly without restart
 - **Real-time monitoring** - Transfer speed, ETA, and file details with date/time
+- **Robust drive listing** - Handles Windows drive roots (C:\, D:\) gracefully even when special files (pagefile.sys, $Recycle.Bin) are present
 
 ## Requirements
 
@@ -41,7 +45,12 @@ Inspired by [AdbExplorer](https://github.com/gregko/AdbExplorer), this project i
 
 3. **Install dependencies**
    ```bash
-   pip install PyQt6
+   pip install -r requirements.txt
+   ```
+   
+   Or manually:
+   ```bash
+   pip install PyQt6 send2trash
    ```
 
 ## Usage
@@ -75,7 +84,19 @@ Inspired by [AdbExplorer](https://github.com/gregko/AdbExplorer), this project i
 - **Drag & drop** - Drag files/folders between panels for instant transfer
 - **Windows Explorer** - Drag files from Explorer directly to remote panel
 - **Copy/Paste** - Use Ctrl+C/Ctrl+V to copy files between panels or from Explorer
-- **Folder transfer** - Automatically transfers all subfolders and files recursively
+- **Folder transfer** - Recursively expands folders into individual file tasks so each file shows its own progress, ETA, and size in the queue
+
+### Context Menu (right-click)
+Both panels share a unified menu, with panel-specific actions:
+
+- **Local panel:** PUSH, Open (default viewer/explorer), Make Directory, Rename, Delete
+- **Remote panel:** PULL, Open (download to `~/.adbcopy/temp` then launch), Make Directory, Rename, Delete
+
+Behavior:
+- Open on remote panel is disabled if any folder is selected
+- Rename is enabled only with a single selection
+- Delete on local panel asks Trash vs Permanent (with red "cannot be undone" warning)
+- Delete on remote panel is permanent only (Android `rm -rf`)
 
 ### Navigation
 - **Back/Forward** - Navigate folder history with ◀ ▶ buttons
@@ -87,6 +108,10 @@ Inspired by [AdbExplorer](https://github.com/gregko/AdbExplorer), this project i
 - **Pause/Resume** - Control transfers at any time
 - **Retry failed** - Automatically retry failed transfers
 - **Sort & filter** - Click column headers to sort
+
+### Language
+- Switch between English and 한국어 from `File → Language` - applies instantly, no restart needed
+- Choice is persisted across runs
 
 ## Building Executable
 
@@ -105,11 +130,11 @@ build.bat
 
 **Single File:**
 - Executable: `dist/onefile/ADBCopy.exe`
-- Release package: `dist/onefile/ADBCopy_v0.1.1_Windows_Portable.zip`
+- Release package: `dist/onefile/ADBCopy_v0.1.3_Windows_Portable.zip`
 
 **Folder:**
 - Executable: `dist/folder/ADBCopy/ADBCopy.exe`
-- Release package: `dist/folder/ADBCopy_v0.1.1.zip`
+- Release package: `dist/folder/ADBCopy_v0.1.3.zip`
 
 See [RELEASE.md](RELEASE.md) for detailed release instructions.
 
@@ -142,7 +167,7 @@ Tests include:
 Version is centrally managed in `adb_copy/__init__.py`:
 
 ```python
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 ```
 
 When you update the version, it automatically reflects in:
@@ -158,12 +183,14 @@ See [VERSION.md](VERSION.md) for details.
 ADBCopy/
 ├── adb_copy/              # Main application package
 │   ├── core/             # Core functionality (ADB manager)
-│   ├── ui/               # UI components
-│   ├── workers/          # Background workers
+│   ├── ui/               # UI components (panels, dialogs)
+│   ├── workers/          # Background workers (transfer, file list, device watch)
+│   ├── utils/            # Cross-platform helpers (open, temp dir)
 │   └── resources/        # Icons and resources
 ├── build.bat             # Build script (folder)
 ├── build_onefile.bat     # Build script (single file)
 ├── run_tests.py          # Integrated test suite
+├── requirements.txt      # Runtime dependencies
 └── README.md             # This file
 ```
 

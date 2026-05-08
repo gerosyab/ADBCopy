@@ -4,6 +4,7 @@ Implements FileZilla-style vertical layout.
 Top: Console, Middle: Dual panels, Bottom: Transfer queue
 """
 
+import os
 from pathlib import Path
 from PyQt6.QtCore import Qt, QThread
 from PyQt6.QtWidgets import (
@@ -21,12 +22,14 @@ from PyQt6.QtGui import QAction, QIcon
 from adb_copy.core.adb_manager import AdbDevice, AdbManager
 from adb_copy.workers.device_watcher import DeviceWatcher
 from adb_copy.workers.transfer_worker import TransferWorker, TransferTask
+from adb_copy.workers.file_list_worker import list_files_recursive_sync
 from adb_copy.ui.console_widget import ConsoleWidget
 from adb_copy.ui.file_panel import FilePanel
 from adb_copy.ui.transfer_queue_widget import TransferQueueWidget
 from adb_copy.ui.overwrite_dialog import OverwriteDialog
-from adb_copy.i18n import tr, set_language, get_language
+from adb_copy.i18n import tr, set_language, get_language, get_translator
 from adb_copy.config import get_config, set_config
+from adb_copy.utils.system_open import open_in_default_app, get_temp_dir
 
 
 class MainWindow(QMainWindow):
@@ -55,6 +58,7 @@ class MainWindow(QMainWindow):
         self._drag_source_files: list[dict] = []
         self._next_task_id = 1
         self._overwrite_all_action: int | None = None  # Store "apply to all" action
+        self._open_after_transfer: dict[int, str] = {}  # task_id -> local path (for remote "Open")
         self.adb_manager = AdbManager()
         
         self._init_ui()
@@ -62,6 +66,9 @@ class MainWindow(QMainWindow):
         self._init_statusbar()
         self._init_device_watcher()
         self._init_transfer_worker()
+        
+        # Live language switching
+        get_translator().add_language_listener(self._retranslate_ui)
     
     def _init_ui(self) -> None:
         """Initialize main UI layout.
@@ -112,6 +119,14 @@ class MainWindow(QMainWindow):
         self.local_panel.file_detail.files_drag_started.connect(self._on_files_drag_started)
         self.local_panel.file_detail.files_dropped.connect(self._on_files_dropped_to_local)
         self.local_panel.folder_tree.files_dropped.connect(self._on_files_dropped_to_local)
+        # Context-menu transfer requests (PUSH from local)
+        self.local_panel.file_detail.transfer_requested.connect(self._on_local_transfer_requested)
+        self.local_panel.folder_tree.transfer_requested.connect(self._on_local_transfer_requested)
+        # Local refresh from folder tree mutations
+        self.local_panel.folder_tree.refresh_requested.connect(
+            lambda: self.local_panel.file_detail.load_path(self.local_panel.file_detail.current_path)
+            if self.local_panel.file_detail.current_path else None
+        )
         panels_layout.addWidget(self.local_panel, stretch=1)
         
         # Center transfer buttons
@@ -141,6 +156,16 @@ class MainWindow(QMainWindow):
         self.remote_panel.file_detail.files_drag_started.connect(self._on_files_drag_started)
         self.remote_panel.file_detail.files_dropped.connect(self._on_files_dropped_to_remote)
         self.remote_panel.folder_tree.files_dropped.connect(self._on_files_dropped_to_remote)
+        # Context-menu transfer requests (PULL from remote)
+        self.remote_panel.file_detail.transfer_requested.connect(self._on_remote_transfer_requested)
+        self.remote_panel.folder_tree.transfer_requested.connect(self._on_remote_transfer_requested)
+        # Remote "Open" requests (download to temp then open)
+        self.remote_panel.file_detail.open_remote_requested.connect(self._on_open_remote_requested)
+        # Remote refresh from folder tree mutations
+        self.remote_panel.folder_tree.refresh_requested.connect(
+            lambda: self.remote_panel.file_detail.load_path(self.remote_panel.file_detail.current_path)
+            if self.remote_panel.file_detail.current_path else None
+        )
         panels_layout.addWidget(self.remote_panel, stretch=1)
         
         # Wrap panel layout in a widget
@@ -170,10 +195,10 @@ class MainWindow(QMainWindow):
         menubar = self.menuBar()
         
         # File menu
-        file_menu = menubar.addMenu(tr("File") + "(&F)")
+        self.file_menu = menubar.addMenu(tr("File") + "(&F)")
         
         # Language submenu
-        language_menu = file_menu.addMenu(tr("Language"))
+        self.language_menu = self.file_menu.addMenu(tr("Language"))
         
         # Get current language
         current_lang = get_language()
@@ -183,42 +208,42 @@ class MainWindow(QMainWindow):
         self.english_action.setCheckable(True)
         self.english_action.setChecked(current_lang == "en")
         self.english_action.triggered.connect(lambda: self._on_language_changed("en"))
-        language_menu.addAction(self.english_action)
+        self.language_menu.addAction(self.english_action)
         
         # Korean action
         self.korean_action = QAction(tr("Korean"), self)
         self.korean_action.setCheckable(True)
         self.korean_action.setChecked(current_lang == "ko")
         self.korean_action.triggered.connect(lambda: self._on_language_changed("ko"))
-        language_menu.addAction(self.korean_action)
+        self.language_menu.addAction(self.korean_action)
         
-        file_menu.addSeparator()
+        self.file_menu.addSeparator()
         
         # About action
-        about_action = QAction(tr("About") + "(&A)", self)
-        about_action.triggered.connect(self._show_about_dialog)
-        file_menu.addAction(about_action)
+        self.about_action = QAction(tr("About") + "(&A)", self)
+        self.about_action.triggered.connect(self._show_about_dialog)
+        self.file_menu.addAction(self.about_action)
         
         # Exit action
-        exit_action = QAction(tr("Exit") + "(&X)", self)
-        exit_action.setShortcut("Ctrl+Q")
-        exit_action.triggered.connect(self.close)
-        file_menu.addAction(exit_action)
+        self.exit_action = QAction(tr("Exit") + "(&X)", self)
+        self.exit_action.setShortcut("Ctrl+Q")
+        self.exit_action.triggered.connect(self.close)
+        self.file_menu.addAction(self.exit_action)
         
         # Transfer menu
-        transfer_menu = menubar.addMenu(tr("Transfer") + "(&T)")
+        self.transfer_menu = menubar.addMenu(tr("Transfer") + "(&T)")
         
         # Push action
-        push_action = QAction(tr("Push (Local→Remote)"), self)
-        push_action.setShortcut("Ctrl+P")
-        push_action.triggered.connect(self._on_push_clicked)
-        transfer_menu.addAction(push_action)
+        self.push_action = QAction(tr("Push (Local→Remote)"), self)
+        self.push_action.setShortcut("Ctrl+P")
+        self.push_action.triggered.connect(self._on_push_clicked)
+        self.transfer_menu.addAction(self.push_action)
         
         # Pull action
-        pull_action = QAction(tr("Pull (Remote→Local)"), self)
-        pull_action.setShortcut("Ctrl+Shift+P")
-        pull_action.triggered.connect(self._on_pull_clicked)
-        transfer_menu.addAction(pull_action)
+        self.pull_action = QAction(tr("Pull (Remote→Local)"), self)
+        self.pull_action.setShortcut("Ctrl+Shift+P")
+        self.pull_action.triggered.connect(self._on_pull_clicked)
+        self.transfer_menu.addAction(self.pull_action)
     
     def _init_statusbar(self) -> None:
         """Initialize status bar."""
@@ -310,38 +335,42 @@ class MainWindow(QMainWindow):
         self.console.log_debug(f"Remote path: {path}")
     
     def _on_language_changed(self, language: str) -> None:
-        """Language selection handler.
+        """Language selection handler. Applies immediately, no restart needed.
         
         Args:
             language: Language code ("en" or "ko")
         """
         # Save language preference
         set_config("language", language)
+        # set_language emits language_changed which all widgets listen to
         set_language(language)
         
         # Update menu checkmarks
         self.english_action.setChecked(language == "en")
         self.korean_action.setChecked(language == "ko")
         
-        # Show restart message
         lang_name = "English" if language == "en" else "한국어"
-        msg = QMessageBox(self)
-        msg.setIcon(QMessageBox.Icon.Information)
-        
-        if language == "en":
-            msg.setWindowTitle("Language Changed")
-            msg.setText(f"Language changed to {lang_name}.")
-            msg.setInformativeText("Please restart the application to apply changes.")
-            msg.setStandardButtons(QMessageBox.StandardButton.Ok)
-        else:
-            msg.setWindowTitle("언어 변경됨")
-            msg.setText(f"언어가 {lang_name}(으)로 변경되었습니다.")
-            msg.setInformativeText("변경사항을 적용하려면 애플리케이션을 재시작하세요.")
-            msg.setStandardButtons(QMessageBox.StandardButton.Ok)
-        
-        msg.exec()
-        
-        self.console.log_info(f"Language changed to {lang_name}")
+        self.console.log_info(tr("Language changed to {0}").format(lang_name))
+    
+    def _retranslate_ui(self, _lang: str = "") -> None:
+        """Refresh main window's translatable text after a language change."""
+        self.setWindowTitle(tr("ADBCopy - ADB File Explorer"))
+        # Menus
+        self.file_menu.setTitle(tr("File") + "(&F)")
+        self.language_menu.setTitle(tr("Language"))
+        self.transfer_menu.setTitle(tr("Transfer") + "(&T)")
+        # Actions
+        self.english_action.setText(tr("English"))
+        self.korean_action.setText(tr("Korean"))
+        self.about_action.setText(tr("About") + "(&A)")
+        self.exit_action.setText(tr("Exit") + "(&X)")
+        self.push_action.setText(tr("Push (Local→Remote)"))
+        self.pull_action.setText(tr("Pull (Remote→Local)"))
+        # Buttons
+        self.push_button.setToolTip(tr("Push (Local→Remote)") + " (Ctrl+P)")
+        self.pull_button.setToolTip(tr("Pull (Remote→Local)") + " (Ctrl+Shift+P)")
+        # Status bar
+        self.statusBar().showMessage(tr("Ready"))
     
     def _show_about_dialog(self) -> None:
         """Show about dialog."""
@@ -492,6 +521,93 @@ class MainWindow(QMainWindow):
         # Reset drag info
         self._drag_source_files = []
     
+    def _on_local_transfer_requested(self, file_infos: list[dict]) -> None:
+        """Handle PUSH triggered from local panel context menu."""
+        if not file_infos:
+            return
+        dest_device = self.remote_panel.file_detail.current_device
+        if not dest_device:
+            QMessageBox.warning(self, tr("Transfer failed"), tr("No device connected"))
+            return
+        dest_path = self.remote_panel.file_detail.current_path or "/"
+        self._add_transfer_tasks("push", file_infos, dest_path, dest_device.serial)
+    
+    def _on_remote_transfer_requested(self, file_infos: list[dict]) -> None:
+        """Handle PULL triggered from remote panel context menu."""
+        if not file_infos:
+            return
+        dest_device = self.remote_panel.file_detail.current_device
+        if not dest_device:
+            QMessageBox.warning(self, tr("Transfer failed"), tr("No device connected"))
+            return
+        dest_path = self.local_panel.file_detail.current_path or str(Path.home())
+        self._add_transfer_tasks("pull", file_infos, dest_path, dest_device.serial)
+    
+    def _on_open_remote_requested(self, file_infos: list[dict]) -> None:
+        """Download the given remote files into temp dir then launch default app.
+        
+        Reuses the transfer queue so the user sees progress. The local
+        destination is `~/.adbcopy/temp/<filename>`. After each file's
+        transfer completes, `_on_transfer_completed` notices the registered
+        task_id and opens the local file.
+        """
+        if not file_infos:
+            return
+        dest_device = self.remote_panel.file_detail.current_device
+        if not dest_device:
+            QMessageBox.warning(self, tr("Transfer failed"), tr("No device connected"))
+            return
+        
+        try:
+            temp_dir = get_temp_dir()
+        except OSError as e:
+            QMessageBox.warning(self, tr("Cannot open file"), str(e))
+            return
+        
+        # Build per-file tasks and register them for post-transfer open.
+        for f in file_infos:
+            if f.get("is_dir"):
+                continue
+            task_id = self._next_task_id
+            self._next_task_id += 1
+            
+            filename = f.get("name") or Path(f["path"]).name
+            local_dest = str(temp_dir / filename)
+            
+            self.transfer_queue.add_transfer(
+                task_id,
+                filename,
+                f["path"],
+                local_dest,
+                skip_stats_update=True,
+                file_size=f.get("size", 0),
+            )
+            task = TransferTask(
+                task_id=task_id,
+                filename=filename,
+                source_path=f["path"],
+                destination_path=local_dest,
+                direction="pull",
+                device_serial=dest_device.serial,
+                file_size=f.get("size", 0),
+                is_dir=False,
+            )
+            self.transfer_worker.add_task(task)
+            self._open_after_transfer[task_id] = local_dest
+        
+        self.transfer_queue._update_status_stats()
+        self.console.log_info(tr("Open After Download") + f": {len(self._open_after_transfer)}")
+        
+        # Start worker if not running
+        if not self.transfer_thread.isRunning():
+            try:
+                self.transfer_thread.started.disconnect()
+            except Exception:
+                pass
+            self.transfer_thread.started.connect(self.transfer_worker.start_transfer)
+            self.transfer_thread.start()
+            self.transfer_queue.enable_pause_button(True)
+    
     def _on_push_clicked(self) -> None:
         """Push button click handler (Local → Remote)."""
         # Get selected files from local panel
@@ -590,6 +706,112 @@ class MainWindow(QMainWindow):
         dest_path = self.local_panel.file_detail.current_path or str(Path.home())
         self._add_transfer_tasks("pull", file_infos, dest_path, dest_device.serial)
     
+    def _expand_folder_file_infos(
+        self,
+        direction: str,
+        file_infos: list[dict],
+        device_serial: str | None,
+    ) -> list[dict]:
+        """Expand any folder entries into individual per-file entries.
+        
+        Each returned dict has these keys:
+            - path: full source path of the file (local OS path or remote /unix path)
+            - name: file basename
+            - rel_path: forward-slash path *relative to dest_path*, including
+              the top-level folder name when the source was a folder. For loose
+              files, rel_path == name.
+            - size: file size in bytes
+            - is_dir: always False
+        
+        Folders are walked recursively. Empty folders are not represented
+        directly; they will be created implicitly when transferring their
+        first file (transfer_worker creates parent dirs).
+        
+        Args:
+            direction: "push" (source=local) or "pull" (source=remote)
+            file_infos: Selected items, possibly mixing files and folders
+            device_serial: Required when direction == "pull"
+            
+        Returns:
+            Flat list of file dicts ready to be turned into transfer tasks.
+        """
+        expanded: list[dict] = []
+        
+        for f in file_infos:
+            name = f.get("name") or Path(f["path"]).name
+            
+            if not f.get("is_dir"):
+                expanded.append({
+                    "path": f["path"],
+                    "name": name,
+                    "rel_path": name,
+                    "size": f.get("size", 0),
+                    "is_dir": False,
+                })
+                continue
+            
+            folder_name = name
+            
+            if direction == "push":
+                base = Path(f["path"])
+                added = 0
+                try:
+                    for p in base.rglob("*"):
+                        try:
+                            if not p.is_file():
+                                continue
+                            size = p.stat().st_size
+                        except (OSError, PermissionError) as e:
+                            print(f"[DEBUG] Skip during folder expand: {p}: {e}")
+                            continue
+                        rel_within = str(p.relative_to(base)).replace("\\", "/")
+                        expanded.append({
+                            "path": str(p),
+                            "name": p.name,
+                            "rel_path": f"{folder_name}/{rel_within}",
+                            "size": size,
+                            "is_dir": False,
+                        })
+                        added += 1
+                except (OSError, PermissionError) as e:
+                    self.console.log_error(f"Failed to walk folder {base}: {e}")
+                self.console.log_debug(f"Folder '{folder_name}' expanded into {added} files")
+            else:  # pull - remote source
+                if not device_serial:
+                    self.console.log_error("No device serial for remote folder expansion")
+                    continue
+                base_path = f["path"].rstrip("/") or "/"
+                try:
+                    remote_files = list_files_recursive_sync(
+                        self.adb_manager,
+                        device_serial,
+                        base_path,
+                    )
+                except Exception as e:
+                    self.console.log_error(f"Failed to list remote folder {base_path}: {e}")
+                    continue
+                
+                added = 0
+                base_prefix = base_path + "/"
+                for rf in remote_files:
+                    if rf.path.startswith(base_prefix):
+                        rel_within = rf.path[len(base_prefix):]
+                    elif rf.path == base_path:
+                        rel_within = rf.name
+                    else:
+                        rel_within = rf.name
+                    expanded.append({
+                        "path": rf.path,
+                        "name": rf.name,
+                        "rel_path": f"{folder_name}/{rel_within}",
+                        "size": rf.size,
+                        "is_dir": False,
+                    })
+                    added += 1
+                self.console.log_debug(f"Remote folder '{folder_name}' expanded into {added} files")
+        
+        return expanded
+    
     def _add_transfer_tasks(
         self,
         direction: str,
@@ -601,7 +823,7 @@ class MainWindow(QMainWindow):
         
         Args:
             direction: Transfer direction ("push" or "pull")
-            file_infos: List of file information
+            file_infos: List of file information (may contain folders)
             dest_path: Destination path
             device_serial: Device serial number
         """
@@ -610,9 +832,22 @@ class MainWindow(QMainWindow):
         # Reset "apply to all" action
         self._overwrite_all_action = None
         
+        # Expand any folders into individual file entries so each file
+        # gets its own queue row with progress / time tracking.
+        has_folder = any(f.get("is_dir") for f in file_infos)
+        if has_folder:
+            self.console.log_info("Expanding folders...")
+            QApplication.processEvents()
+            file_infos = self._expand_folder_file_infos(direction, file_infos, device_serial)
+            self.console.log_info(f"{len(file_infos)} files queued after folder expansion")
+        
         # Batch processing settings
         BATCH_SIZE = 50  # Process 50 files per batch
         total_files = len(file_infos)
+        
+        if total_files == 0:
+            self.console.log_warning("No files to transfer (folders may be empty)")
+            return
         
         # Disable sorting (performance improvement)
         self.transfer_queue.table.setSortingEnabled(False)
@@ -628,13 +863,17 @@ class MainWindow(QMainWindow):
                 task_id = self._next_task_id
                 self._next_task_id += 1
                 
-                filename = Path(file_info["path"]).name
                 source_path = file_info["path"]
+                rel_path = file_info.get("rel_path") or file_info.get("name") or Path(source_path).name
+                filename = file_info.get("name") or Path(source_path).name
                 
                 if direction == "push":
-                    destination_path = f"{dest_path.rstrip('/')}/{filename}"
+                    # Remote uses '/' separators
+                    destination_path = f"{dest_path.rstrip('/')}/{rel_path}"
                 else:
-                    destination_path = str(Path(dest_path) / filename)
+                    # Local: convert forward-slash rel_path to OS path
+                    parts = rel_path.split("/")
+                    destination_path = str(Path(dest_path).joinpath(*parts))
                 
                 # Add to transfer queue (UI) - skip stats update
                 self.transfer_queue.add_transfer(
@@ -646,7 +885,7 @@ class MainWindow(QMainWindow):
                     file_size=file_info.get("size", 0),
                 )
                 
-                # Add task to worker
+                # Add task to worker (always False since folders are expanded)
                 task = TransferTask(
                     task_id=task_id,
                     filename=filename,
@@ -655,7 +894,7 @@ class MainWindow(QMainWindow):
                     direction=direction,
                     device_serial=device_serial,
                     file_size=file_info.get("size", 0),
-                    is_dir=file_info.get("is_dir", False),
+                    is_dir=False,
                 )
                 self.transfer_worker.add_task(task)
             
@@ -721,6 +960,16 @@ class MainWindow(QMainWindow):
         self.console.log_debug(f"Transfer completed: Task {task_id}")
         self.transfer_queue.update_progress_by_task_id(task_id, 100)
         
+        # Auto-open file if this was an "Open" request from remote panel
+        if task_id in self._open_after_transfer:
+            local_path = self._open_after_transfer.pop(task_id)
+            try:
+                open_in_default_app(local_path)
+                self.console.log_info(f"Opened: {local_path}")
+            except OSError as e:
+                self.console.log_error(f"Cannot open {local_path}: {e}")
+                QMessageBox.warning(self, tr("Cannot open file"), f"{local_path}\n\n{e}")
+        
         # No refresh on individual completion (performance)
     
     def _on_transfer_failed(self, task_id: int, error_message: str) -> None:
@@ -733,6 +982,8 @@ class MainWindow(QMainWindow):
         print(f"[DEBUG] _on_transfer_failed called: task_id={task_id}, error={error_message}")
         self.console.log_error(f"Transfer failed (Task {task_id}): {error_message}")
         self.transfer_queue.mark_failed_by_task_id(task_id, error_message)
+        # Drop pending open request on failure
+        self._open_after_transfer.pop(task_id, None)
     
     def _on_all_transfers_completed(self) -> None:
         """All transfers completed signal handler."""

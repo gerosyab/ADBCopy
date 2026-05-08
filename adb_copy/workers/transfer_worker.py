@@ -164,6 +164,19 @@ class TransferWorker(QObject):
             print(f"[DEBUG] transfer_progress emit: {task.task_id}, 0%")
             self.transfer_progress.emit(task.task_id, 0, "0 KB/s")
             
+            # Ensure remote parent directory exists (only when destination
+            # has a non-trivial parent path; root-level files don't need it).
+            if not task.is_dir:
+                remote_parent = task.destination_path.rsplit("/", 1)[0]
+                if remote_parent and remote_parent != "":
+                    try:
+                        self.adb_manager.create_directory(
+                            task.device_serial,
+                            remote_parent,
+                        )
+                    except subprocess.SubprocessError as e:
+                        print(f"[DEBUG] mkdir -p '{remote_parent}' failed: {e}")
+            
             # File transfer (blocking)
             print(f"[DEBUG] push_file called: {task.source_path} -> {task.destination_path}")
             self.adb_manager.push_file(
@@ -203,6 +216,15 @@ class TransferWorker(QObject):
             # Initial progress
             print(f"[DEBUG] transfer_progress emit: {task.task_id}, 0%")
             self.transfer_progress.emit(task.task_id, 0, "0 KB/s")
+            
+            # Ensure local parent directory exists for files; for is_dir
+            # transfers `adb pull` itself recreates the tree.
+            if not task.is_dir:
+                local_parent = Path(task.destination_path).parent
+                try:
+                    local_parent.mkdir(parents=True, exist_ok=True)
+                except OSError as e:
+                    print(f"[DEBUG] makedirs '{local_parent}' failed: {e}")
             
             # File transfer (blocking)
             print(f"[DEBUG] pull_file called: {task.source_path} -> {task.destination_path}")

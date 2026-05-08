@@ -4,12 +4,16 @@ Displays hierarchical folder tree structure.
 """
 
 import os
+import shutil
 import string
 from pathlib import Path
 from PyQt6.QtCore import Qt, pyqtSignal, QThread
+from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QHBoxLayout,
+    QInputDialog,
     QLineEdit,
+    QMenu,
     QPushButton,
     QTreeWidget,
     QTreeWidgetItem,
@@ -20,7 +24,9 @@ from PyQt6.QtWidgets import (
 
 from adb_copy.core.adb_manager import AdbDevice, AdbManager
 from adb_copy.workers.file_list_worker import FileListWorker, RemoteFileInfo
-from adb_copy.i18n import tr
+from adb_copy.i18n import tr, get_translator
+from adb_copy.ui.delete_dialog import DeleteDialog
+from adb_copy.utils.system_open import open_in_default_app
 
 
 class FolderTreeWidget(QWidget):
@@ -35,6 +41,8 @@ class FolderTreeWidget(QWidget):
     
     folder_selected = pyqtSignal(str)
     files_dropped = pyqtSignal(list)
+    transfer_requested = pyqtSignal(list)  # list of file_info dicts
+    refresh_requested = pyqtSignal()
     
     def __init__(self, panel_type: str = "local") -> None:
         """Initialize FolderTreeWidget instance.
@@ -46,12 +54,16 @@ class FolderTreeWidget(QWidget):
         self.panel_type = panel_type
         self.current_device: AdbDevice | None = None
         self._previous_path = ""
+        self.adb_manager = AdbManager() if panel_type == "remote" else None
         
         # Navigation history
         self._history_stack = []  # List of visited paths
         self._history_index = -1  # Current position in history
         
         self._init_ui()
+        
+        # Live language switching
+        get_translator().add_language_listener(self._retranslate_ui)
     
     def _init_ui(self) -> None:
         """Initialize UI."""
@@ -85,10 +97,10 @@ class FolderTreeWidget(QWidget):
         path_layout.addWidget(self.path_edit)
         
         # Go button
-        go_button = QPushButton(tr("Go"))
-        go_button.clicked.connect(self._on_path_entered)
-        go_button.setMaximumWidth(50)
-        path_layout.addWidget(go_button)
+        self.go_button = QPushButton(tr("Go"))
+        self.go_button.clicked.connect(self._on_path_entered)
+        self.go_button.setMaximumWidth(50)
+        path_layout.addWidget(self.go_button)
         
         layout.addLayout(path_layout)
         
@@ -97,6 +109,10 @@ class FolderTreeWidget(QWidget):
         self.tree_widget.setHeaderHidden(True)
         self.tree_widget.itemClicked.connect(self._on_item_clicked)
         self.tree_widget.itemExpanded.connect(self._on_item_expanded)
+        
+        # Context menu
+        self.tree_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree_widget.customContextMenuRequested.connect(self._show_context_menu)
         
         # Enable drop
         self.tree_widget.setAcceptDrops(True)
@@ -476,6 +492,254 @@ class FolderTreeWidget(QWidget):
             print("[DEBUG] files_dropped signal emitted")
         else:
             print("[DEBUG] Drop rejected")
+    
+    def _show_context_menu(self, position) -> None:
+        """Show context menu for a folder tree item.
+        
+        Skips virtual nodes (My PC) and placeholder/loading items.
+        Operates on the right-clicked folder.
+        """
+        item = self.tree_widget.itemAt(position)
+        if item is None:
+            return
+        
+        # Placeholder / loading items have no path
+        if item.text(0) in ("...", tr("Loading...")):
+            return
+        
+        folder_path = item.data(0, Qt.ItemDataRole.UserRole)
+        if folder_path is None:
+            # Virtual node like "My PC"
+            return
+        
+        # Auto-select clicked item
+        self.tree_widget.setCurrentItem(item)
+        
+        menu = QMenu(self)
+        
+        if self.panel_type == "local":
+            transfer_action = QAction(tr("PUSH"), self)
+            transfer_action.setEnabled(self._has_remote_device())
+            transfer_action.triggered.connect(
+                lambda: self._on_menu_transfer(item, folder_path)
+            )
+            menu.addAction(transfer_action)
+            
+            menu.addSeparator()
+            
+            open_action = QAction(tr("Open in Explorer"), self)
+            open_action.triggered.connect(
+                lambda: self._on_menu_open_local(folder_path)
+            )
+            menu.addAction(open_action)
+        else:
+            transfer_action = QAction(tr("PULL"), self)
+            transfer_action.setEnabled(self.current_device is not None)
+            transfer_action.triggered.connect(
+                lambda: self._on_menu_transfer(item, folder_path)
+            )
+            menu.addAction(transfer_action)
+            
+            menu.addSeparator()
+        
+        new_folder_action = QAction(tr("Make Directory"), self)
+        new_folder_action.triggered.connect(
+            lambda: self._on_menu_new_folder(item, folder_path)
+        )
+        menu.addAction(new_folder_action)
+        
+        rename_action = QAction(tr("Rename"), self)
+        rename_action.triggered.connect(
+            lambda: self._on_menu_rename(item, folder_path)
+        )
+        menu.addAction(rename_action)
+        
+        delete_action = QAction(tr("Delete"), self)
+        delete_action.triggered.connect(
+            lambda: self._on_menu_delete(item, folder_path)
+        )
+        menu.addAction(delete_action)
+        
+        menu.exec(self.tree_widget.viewport().mapToGlobal(position))
+    
+    def _has_remote_device(self) -> bool:
+        """Check if a remote device is connected (looked up via top-level window)."""
+        win = self.window()
+        if win is None:
+            return False
+        remote_panel = getattr(win, "remote_panel", None)
+        if remote_panel is None:
+            return False
+        file_detail = getattr(remote_panel, "file_detail", None)
+        if file_detail is None:
+            return False
+        return file_detail.current_device is not None
+    
+    def _on_menu_transfer(self, item: QTreeWidgetItem, folder_path: str) -> None:
+        """Emit transfer_requested for the right-clicked folder."""
+        name = Path(folder_path).name if self.panel_type == "local" else folder_path.rstrip("/").rsplit("/", 1)[-1] or folder_path
+        file_info = {
+            "path": folder_path,
+            "name": name,
+            "size": 0,
+            "is_dir": True,
+            "panel_type": self.panel_type,
+            "device_serial": self.current_device.serial if self.current_device else None,
+        }
+        self.transfer_requested.emit([file_info])
+    
+    def _on_menu_open_local(self, folder_path: str) -> None:
+        """Open local folder in OS file explorer."""
+        try:
+            open_in_default_app(folder_path)
+        except OSError as e:
+            QMessageBox.warning(self, tr("Cannot open file"), str(e))
+    
+    def _on_menu_new_folder(self, item: QTreeWidgetItem, parent_path: str) -> None:
+        """Create a sub-folder under the right-clicked folder."""
+        folder_name, ok = QInputDialog.getText(
+            self,
+            tr("New Folder"),
+            tr("Folder name:"),
+        )
+        if not ok or not folder_name:
+            return
+        
+        try:
+            if self.panel_type == "local":
+                new_path = Path(parent_path) / folder_name
+                new_path.mkdir(parents=False, exist_ok=False)
+            else:
+                if not self.current_device or not self.adb_manager:
+                    return
+                new_path_str = f"{parent_path.rstrip('/')}/{folder_name}"
+                self.adb_manager.create_directory(
+                    self.current_device.serial,
+                    new_path_str,
+                )
+        except Exception as e:
+            QMessageBox.warning(self, tr("Folder Creation Failed"), str(e))
+            return
+        
+        # Refresh tree branch and emit folder_selected to refresh detail
+        self._refresh_tree_branch(item)
+        self.refresh_requested.emit()
+    
+    def _on_menu_rename(self, item: QTreeWidgetItem, folder_path: str) -> None:
+        """Rename the right-clicked folder."""
+        if self.panel_type == "local":
+            old = Path(folder_path)
+            old_name = old.name
+        else:
+            old_name = folder_path.rstrip("/").rsplit("/", 1)[-1]
+        
+        new_name, ok = QInputDialog.getText(
+            self,
+            tr("Rename"),
+            tr("New name:"),
+            text=old_name,
+        )
+        if not ok or not new_name or new_name == old_name:
+            return
+        
+        try:
+            if self.panel_type == "local":
+                new_path = Path(folder_path).parent / new_name
+                Path(folder_path).rename(new_path)
+            else:
+                if not self.current_device or not self.adb_manager:
+                    return
+                parent = folder_path.rstrip("/").rsplit("/", 1)[0] or "/"
+                new_path_str = f"{parent.rstrip('/')}/{new_name}" if parent != "/" else f"/{new_name}"
+                self.adb_manager.rename_file(
+                    self.current_device.serial,
+                    folder_path,
+                    new_path_str,
+                )
+        except Exception as e:
+            QMessageBox.warning(self, tr("Rename Failed"), str(e))
+            return
+        
+        # Refresh parent branch
+        parent_item = item.parent()
+        if parent_item:
+            self._refresh_tree_branch(parent_item)
+        self.refresh_requested.emit()
+    
+    def _on_menu_delete(self, item: QTreeWidgetItem, folder_path: str) -> None:
+        """Delete the right-clicked folder (trash for local, permanent for remote)."""
+        sample = Path(folder_path).name if self.panel_type == "local" else folder_path
+        dialog = DeleteDialog(
+            item_count=1,
+            allow_trash=(self.panel_type == "local"),
+            sample_name=sample,
+            parent=self,
+        )
+        dialog.exec()
+        choice = dialog.get_choice()
+        if choice == DeleteDialog.CANCEL:
+            return
+        
+        try:
+            if self.panel_type == "local":
+                if choice == DeleteDialog.TRASH:
+                    try:
+                        from send2trash import send2trash
+                        send2trash(str(folder_path))
+                    except (ImportError, Exception) as e:
+                        # Fallback to permanent delete
+                        QMessageBox.information(
+                            self,
+                            tr("Info"),
+                            tr("Trash not supported on this system, falling back to permanent delete"),
+                        )
+                        shutil.rmtree(folder_path, ignore_errors=False)
+                else:
+                    shutil.rmtree(folder_path, ignore_errors=False)
+            else:
+                if not self.current_device or not self.adb_manager:
+                    return
+                self.adb_manager.delete_file(
+                    self.current_device.serial,
+                    folder_path,
+                    is_dir=True,
+                )
+        except Exception as e:
+            QMessageBox.warning(self, tr("Delete Failed"), str(e))
+            return
+        
+        # Refresh parent branch
+        parent_item = item.parent()
+        if parent_item:
+            self._refresh_tree_branch(parent_item)
+        self.refresh_requested.emit()
+    
+    def _refresh_tree_branch(self, parent_item: QTreeWidgetItem) -> None:
+        """Reload children of a tree item."""
+        # Clear current children
+        while parent_item.childCount() > 0:
+            parent_item.removeChild(parent_item.child(0))
+        
+        # Reload
+        parent_path = parent_item.data(0, Qt.ItemDataRole.UserRole)
+        if parent_path is None:
+            return
+        
+        if self.panel_type == "local":
+            self._load_local_children(parent_item, parent_path)
+        else:
+            self._load_remote_children(parent_item, parent_path)
+    
+    def _retranslate_ui(self, _lang: str = "") -> None:
+        """Refresh translatable text in this widget."""
+        placeholder = tr("Local path...") if self.panel_type == "local" else "/"
+        self.path_edit.setPlaceholderText(placeholder)
+        self.back_button.setToolTip(tr("Back"))
+        self.forward_button.setToolTip(tr("Forward"))
+        # Find Go button and update text - it's the last widget in path_layout
+        # Track via direct attribute (set in _init_ui below)
+        if hasattr(self, "go_button"):
+            self.go_button.setText(tr("Go"))
     
     def _add_to_history(self, path: str) -> None:
         """Add path to navigation history.

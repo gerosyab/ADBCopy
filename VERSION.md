@@ -4,7 +4,7 @@
 버전은 `adb_copy/__init__.py`에서 관리됩니다.
 
 ```python
-__version__ = "0.1.1"
+__version__ = "0.1.3"
 ```
 
 ## 버전 업데이트 방법
@@ -27,6 +27,7 @@ __version__ = "0.2.0"  # 새 버전
 - `README.md`
 - `RELEASE.md`
 - `BUILD.md`
+- `VERSION.md` (이 파일의 "현재 버전" 섹션)
 
 ## 릴리스 체크리스트
 

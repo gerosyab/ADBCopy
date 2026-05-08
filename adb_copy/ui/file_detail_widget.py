@@ -3,6 +3,7 @@
 Displays file/folder list of selected folder in a table.
 """
 
+import shutil
 from pathlib import Path
 from datetime import datetime
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QMimeData, QUrl
@@ -22,7 +23,9 @@ from PyQt6.QtWidgets import (
 
 from adb_copy.core.adb_manager import AdbDevice, AdbManager
 from adb_copy.workers.file_list_worker import FileListWorker, RemoteFileInfo
-from adb_copy.i18n import tr
+from adb_copy.i18n import tr, get_translator
+from adb_copy.ui.delete_dialog import DeleteDialog
+from adb_copy.utils.system_open import open_in_default_app
 
 
 class SortableTableWidgetItem(QTableWidgetItem):
@@ -84,6 +87,8 @@ class FileDetailWidget(QWidget):
     files_drag_started = pyqtSignal(list)  # list of file info dicts
     files_dropped = pyqtSignal(list)
     refresh_requested = pyqtSignal()  # Refresh request
+    transfer_requested = pyqtSignal(list)  # PUSH/PULL via context menu
+    open_remote_requested = pyqtSignal(list)  # Remote files to download+open
     
     def __init__(self, panel_type: str = "local") -> None:
         """Initialize FileDetailWidget instance.
@@ -97,6 +102,9 @@ class FileDetailWidget(QWidget):
         self.current_device: AdbDevice | None = None
         self.adb_manager = AdbManager() if panel_type == "remote" else None
         self._init_ui()
+        
+        # Live language switching
+        get_translator().add_language_listener(self._retranslate_ui)
     
     def _init_ui(self) -> None:
         """Initialize UI."""
@@ -187,6 +195,24 @@ class FileDetailWidget(QWidget):
             }
         """)
         layout.addWidget(self.status_label)
+        
+        # Error overlay (positioned over table area)
+        self.error_overlay = QLabel(self)
+        self.error_overlay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.error_overlay.setWordWrap(True)
+        self.error_overlay.setStyleSheet("""
+            QLabel {
+                background-color: rgba(255, 240, 240, 245);
+                color: #b00020;
+                border: 1px solid #b00020;
+                padding: 20px;
+                font-size: 11pt;
+            }
+        """)
+        # Block all mouse events on overlay
+        self.error_overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        self.error_overlay.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
+        self.error_overlay.hide()
     
     def set_device(self, device: AdbDevice | None) -> None:
         """Set connected device for remote panel.
@@ -219,97 +245,125 @@ class FileDetailWidget(QWidget):
         Args:
             path: Local path to load
         """
+        print(f"[DEBUG] _load_local_files called with path: '{path}'")
+        path_obj = Path(path)
+        
+        if not path_obj.exists():
+            self._show_error(f"Path does not exist:\n{path}")
+            return
+        if not path_obj.is_dir():
+            self._show_error(f"Not a directory:\n{path}")
+            return
+        
+        # Try to enumerate. Drive roots can fail entirely on some systems.
         try:
-            print(f"[DEBUG] _load_local_files called with path: '{path}'")
-            print(f"[DEBUG] path type: {type(path)}, repr: {repr(path)}")
-            path_obj = Path(path)
-            
-            if not path_obj.exists() or not path_obj.is_dir():
-                self._show_error("Invalid path.")
-                return
-            
-            # Temporarily disable sorting (performance improvement)
-            self.table.setSortingEnabled(False)
-            
-            # Initialize table
-            self.table.setRowCount(0)
-            
-            # Add parent folder item (..)
-            if path_obj.parent != path_obj:  # If not root
-                row = 0
-                self.table.insertRow(row)
-                
-                # Use special sort key to keep .. at top always
-                parent_item = SortableTableWidgetItem("📁 ..")
-                parent_item.setData(Qt.ItemDataRole.UserRole, str(path_obj.parent))
-                parent_item.setData(Qt.ItemDataRole.UserRole + 1, True)  # is_dir
-                parent_item.setData(Qt.ItemDataRole.UserRole + 2, "\x00")  # Always sort first
-                self.table.setItem(row, 0, parent_item)
-                
-                self.table.setItem(row, 1, SortableTableWidgetItem("", 0))
-                self.table.setItem(row, 2, SortableTableWidgetItem("", 0))
-                self.table.setItem(row, 3, SortableTableWidgetItem("", 0))
-                self.table.setItem(row, 4, SortableTableWidgetItem(tr("Parent"), "\x00"))
-            
-            # Get file list
-            items = sorted(
-                path_obj.iterdir(),
-                key=lambda p: (not p.is_dir(), p.name.lower()),
-            )
-            
-            for item in items:
+            raw_iter = list(path_obj.iterdir())
+        except PermissionError as e:
+            self._show_error(f"Permission denied:\n{path}\n\n{e}")
+            return
+        except OSError as e:
+            self._show_error(f"Cannot read directory:\n{path}\n\n{e}")
+            return
+        
+        # Clear any previous error
+        self._hide_error()
+        
+        # Per-item: figure out is_dir / size / mtime, skipping items that
+        # cause WinError 2 / permission errors (e.g. pagefile.sys, $Recycle.Bin,
+        # System Volume Information, transient temp files at drive roots).
+        entries = []  # list of (item, is_dir, size, mtime, mtime_ts)
+        skipped = 0
+        for item in raw_iter:
+            try:
                 is_dir = item.is_dir()
+            except (OSError, PermissionError) as e:
+                print(f"[DEBUG] Skip is_dir() for {item}: {e}")
+                skipped += 1
+                continue
+            
+            size = 0
+            mtime = ""
+            mtime_ts = 0
+            try:
                 stat_info = item.stat()
                 size = 0 if is_dir else stat_info.st_size
-                mtime = datetime.fromtimestamp(stat_info.st_mtime).strftime("%Y-%m-%d %H:%M")
-                
-                row = self.table.rowCount()
-                self.table.insertRow(row)
-                
-                # Name
-                sort_key = f"0_{item.name.lower()}" if is_dir else f"1_{item.name.lower()}"
-                name_item = SortableTableWidgetItem(
-                    f"📁 {item.name}" if is_dir else item.name
-                )
-                name_item.setData(Qt.ItemDataRole.UserRole, str(item))
-                name_item.setData(Qt.ItemDataRole.UserRole + 1, is_dir)
-                name_item.setData(Qt.ItemDataRole.UserRole + 2, sort_key)
-                self.table.setItem(row, 0, name_item)
-                
-                # Size
-                size_item = SortableTableWidgetItem(self._format_size(size), size)
-                size_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                self.table.setItem(row, 1, size_item)
-                
-                # Date
-                date_item = SortableTableWidgetItem(mtime, stat_info.st_mtime)
-                self.table.setItem(row, 2, date_item)
-                
-                # Permissions
-                perm_item = SortableTableWidgetItem(
-                    tr("Folder") if is_dir else tr("File"),
-                    0 if is_dir else 1
-                )
-                self.table.setItem(row, 3, perm_item)
-                
-                # Type
-                type_sort = f"0_{tr('Folder')}" if is_dir else f"1_{item.suffix or 'zzz'}"
-                type_item = SortableTableWidgetItem(
-                    tr("Folder") if is_dir else item.suffix or "-",
-                    type_sort
-                )
-                self.table.setItem(row, 4, type_item)
+                mtime_ts = stat_info.st_mtime
+                mtime = datetime.fromtimestamp(mtime_ts).strftime("%Y-%m-%d %H:%M")
+            except (OSError, PermissionError) as e:
+                print(f"[DEBUG] Skip stat() for {item}: {e}")
+                # Still show entry but with empty stat info
             
-            # Update status bar
-            self._update_status_bar()
+            entries.append((item, is_dir, size, mtime, mtime_ts))
+        
+        if skipped:
+            print(f"[DEBUG] {skipped} items skipped due to errors")
+        
+        entries.sort(key=lambda e: (not e[1], e[0].name.lower()))
+        
+        # Temporarily disable sorting (performance improvement)
+        self.table.setSortingEnabled(False)
+        self.table.setRowCount(0)
+        
+        # Add parent folder item (..)
+        if path_obj.parent != path_obj:  # If not root
+            row = 0
+            self.table.insertRow(row)
             
-            # Re-enable sorting
-            self.table.setSortingEnabled(True)
-                
-        except PermissionError:
-            self._show_error("Permission denied.")
-        except Exception as e:
-            self._show_error(f"Load failed: {str(e)}")
+            # Use special sort key to keep .. at top always
+            parent_item = SortableTableWidgetItem("📁 ..")
+            parent_item.setData(Qt.ItemDataRole.UserRole, str(path_obj.parent))
+            parent_item.setData(Qt.ItemDataRole.UserRole + 1, True)  # is_dir
+            parent_item.setData(Qt.ItemDataRole.UserRole + 2, "\x00")  # Always sort first
+            self.table.setItem(row, 0, parent_item)
+            
+            self.table.setItem(row, 1, SortableTableWidgetItem("", 0))
+            self.table.setItem(row, 2, SortableTableWidgetItem("", 0))
+            self.table.setItem(row, 3, SortableTableWidgetItem("", 0))
+            self.table.setItem(row, 4, SortableTableWidgetItem(tr("Parent"), "\x00"))
+        
+        for item, is_dir, size, mtime, mtime_ts in entries:
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            
+            # Name
+            sort_key = f"0_{item.name.lower()}" if is_dir else f"1_{item.name.lower()}"
+            name_item = SortableTableWidgetItem(
+                f"📁 {item.name}" if is_dir else item.name
+            )
+            name_item.setData(Qt.ItemDataRole.UserRole, str(item))
+            name_item.setData(Qt.ItemDataRole.UserRole + 1, is_dir)
+            name_item.setData(Qt.ItemDataRole.UserRole + 2, sort_key)
+            self.table.setItem(row, 0, name_item)
+            
+            # Size
+            size_item = SortableTableWidgetItem(self._format_size(size), size)
+            size_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.table.setItem(row, 1, size_item)
+            
+            # Date
+            date_item = SortableTableWidgetItem(mtime, mtime_ts)
+            self.table.setItem(row, 2, date_item)
+            
+            # Permissions
+            perm_item = SortableTableWidgetItem(
+                tr("Folder") if is_dir else tr("File"),
+                0 if is_dir else 1
+            )
+            self.table.setItem(row, 3, perm_item)
+            
+            # Type
+            type_sort = f"0_{tr('Folder')}" if is_dir else f"1_{item.suffix or 'zzz'}"
+            type_item = SortableTableWidgetItem(
+                tr("Folder") if is_dir else item.suffix or "-",
+                type_sort
+            )
+            self.table.setItem(row, 4, type_item)
+        
+        # Update status bar
+        self._update_status_bar()
+        
+        # Re-enable sorting
+        self.table.setSortingEnabled(True)
     
     def _load_remote_files(self, path: str) -> None:
         """Load file list of remote path.
@@ -320,6 +374,7 @@ class FileDetailWidget(QWidget):
         if not self.current_device:
             # Don't show error, just keep empty table
             self.table.setRowCount(0)
+            self._hide_error()
             return
         
         # Clean up existing thread if any
@@ -328,6 +383,9 @@ class FileDetailWidget(QWidget):
                 print("[DEBUG] Terminating existing thread...")
                 self._file_list_thread.quit()
                 self._file_list_thread.wait(1000)
+        
+        # Hide previous error
+        self._hide_error()
         
         # Show loading indicator
         self.table.setRowCount(1)
@@ -362,6 +420,9 @@ class FileDetailWidget(QWidget):
         Args:
             files: File list
         """
+        # Hide any previous error
+        self._hide_error()
+        
         # Update current_path (extract from first file's path)
         if files and not self.current_path:
             first_file_path = files[0].path
@@ -476,14 +537,46 @@ class FileDetailWidget(QWidget):
         return f"{size:.1f} PB"
     
     def _show_error(self, message: str) -> None:
-        """Display error message.
+        """Display error as overlay over the table.
+        
+        Clears the table and shows a non-interactive overlay with the
+        error message. The table is disabled while the error is shown
+        so right-click and other interactions are blocked.
         
         Args:
             message: Error message
         """
-        self.table.setRowCount(1)
-        error_item = QTableWidgetItem(f"⚠ {message}")
-        self.table.setItem(0, 0, error_item)
+        # Clear table content so no fake rows can be selected/right-clicked
+        self.table.setRowCount(0)
+        self.table.setEnabled(False)
+        
+        self.error_overlay.setText(f"⚠ {message}")
+        self._reposition_error_overlay()
+        self.error_overlay.raise_()
+        self.error_overlay.show()
+        
+        # Update status bar to reflect empty state
+        self._update_status_bar()
+    
+    def _hide_error(self) -> None:
+        """Hide the error overlay and re-enable the table."""
+        if self.error_overlay.isVisible():
+            self.error_overlay.hide()
+        if not self.table.isEnabled():
+            self.table.setEnabled(True)
+    
+    def _reposition_error_overlay(self) -> None:
+        """Position the error overlay over the table area."""
+        if not hasattr(self, "error_overlay"):
+            return
+        # Cover the entire table widget (including viewport + scrollbars)
+        geom = self.table.geometry()
+        self.error_overlay.setGeometry(geom)
+    
+    def resizeEvent(self, event) -> None:
+        """Reposition overlay on resize."""
+        super().resizeEvent(event)
+        self._reposition_error_overlay()
     
     def _start_drag(self, supported_actions: Qt.DropAction) -> None:
         """Handle drag start event.
@@ -685,40 +778,87 @@ class FileDetailWidget(QWidget):
             print("[DEBUG] Drop rejected")
     
     def _show_context_menu(self, position) -> None:
-        """Display context menu.
+        """Display unified context menu (panel-aware)."""
+        # Don't show menu while error overlay is up
+        if hasattr(self, "error_overlay") and self.error_overlay.isVisible():
+            return
         
-        Args:
-            position: Mouse position
-        """
         menu = QMenu(self)
         
-        # Check selected items
-        selected_rows = set(item.row() for item in self.table.selectedItems())
+        # Collect selection info, excluding parent ".." item
+        selected_infos = self._collect_selection_infos()
+        single = len(selected_infos) == 1
+        any_dir = any(f["is_dir"] for f in selected_infos)
+        all_files = bool(selected_infos) and not any_dir
         
-        if self.panel_type == "remote" and self.current_device:
-            # Remote panel menu
-            if selected_rows:
-                delete_action = QAction(tr("Delete"), self)
-                delete_action.triggered.connect(self._on_delete_selected)
-                menu.addAction(delete_action)
-                
-                if len(selected_rows) == 1:
-                    rename_action = QAction(tr("Rename"), self)
-                    rename_action.triggered.connect(self._on_rename_selected)
-                    menu.addAction(rename_action)
-                
-                menu.addSeparator()
+        if self.panel_type == "local":
+            # PUSH
+            push_action = QAction(tr("PUSH"), self)
+            push_action.setEnabled(bool(selected_infos) and self._has_remote_device())
+            push_action.triggered.connect(self._on_menu_push)
+            menu.addAction(push_action)
             
-            new_folder_action = QAction(tr("New Folder"), self)
+            menu.addSeparator()
+            
+            # Open: each selected (file → default viewer, folder → explorer)
+            open_action = QAction(tr("Open"), self)
+            open_action.setEnabled(bool(selected_infos))
+            open_action.triggered.connect(self._on_menu_open_local)
+            menu.addAction(open_action)
+            
+            menu.addSeparator()
+            
+            # Make Directory (in current folder)
+            new_folder_action = QAction(tr("Make Directory"), self)
+            new_folder_action.triggered.connect(self._on_create_folder_local)
+            menu.addAction(new_folder_action)
+            
+            # Rename - single only
+            rename_action = QAction(tr("Rename"), self)
+            rename_action.setEnabled(single)
+            rename_action.triggered.connect(self._on_rename_local)
+            menu.addAction(rename_action)
+            
+            # Delete
+            delete_action = QAction(tr("Delete"), self)
+            delete_action.setEnabled(bool(selected_infos))
+            delete_action.triggered.connect(self._on_delete_local)
+            menu.addAction(delete_action)
+        
+        else:  # remote
+            # PULL
+            pull_action = QAction(tr("PULL"), self)
+            pull_action.setEnabled(bool(selected_infos) and self.current_device is not None)
+            pull_action.triggered.connect(self._on_menu_pull)
+            menu.addAction(pull_action)
+            
+            menu.addSeparator()
+            
+            # Open (only when all selected items are files)
+            open_action = QAction(tr("Open"), self)
+            open_action.setEnabled(all_files and self.current_device is not None)
+            open_action.triggered.connect(self._on_menu_open_remote)
+            menu.addAction(open_action)
+            
+            menu.addSeparator()
+            
+            # Make Directory
+            new_folder_action = QAction(tr("Make Directory"), self)
+            new_folder_action.setEnabled(self.current_device is not None)
             new_folder_action.triggered.connect(self._on_create_folder)
             menu.addAction(new_folder_action)
             
-        elif self.panel_type == "local":
-            # Local panel menu (simple version)
-            if len(selected_rows) == 1:
-                rename_action = QAction(tr("Rename"), self)
-                rename_action.triggered.connect(self._on_rename_local)
-                menu.addAction(rename_action)
+            # Rename - single only
+            rename_action = QAction(tr("Rename"), self)
+            rename_action.setEnabled(single and self.current_device is not None)
+            rename_action.triggered.connect(self._on_rename_selected)
+            menu.addAction(rename_action)
+            
+            # Delete
+            delete_action = QAction(tr("Delete"), self)
+            delete_action.setEnabled(bool(selected_infos) and self.current_device is not None)
+            delete_action.triggered.connect(self._on_delete_selected)
+            menu.addAction(delete_action)
         
         menu.addSeparator()
         refresh_action = QAction(tr("Refresh"), self)
@@ -727,28 +867,16 @@ class FileDetailWidget(QWidget):
         
         menu.exec(self.table.viewport().mapToGlobal(position))
     
-    def _on_delete_selected(self) -> None:
-        """Delete selected files/folders handler."""
-        if not self.current_device:
-            return
-        
-        selected_rows = set(item.row() for item in self.table.selectedItems())
-        if not selected_rows:
-            return
-        
-        # Confirmation dialog
-        reply = QMessageBox.question(
-            self,
-            tr("Confirm Delete"),
-            tr("Delete {0} item(s)?").format(len(selected_rows)),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        
-        if reply != QMessageBox.StandardButton.Yes:
-            return
-        
-        # Execute delete
-        for row in selected_rows:
+    def _collect_selection_infos(self) -> list[dict]:
+        """Collect file_info dicts for currently selected rows (excluding `..`)."""
+        infos: list[dict] = []
+        seen_rows: set[int] = set()
+        for item in self.table.selectedItems():
+            row = item.row()
+            if row in seen_rows:
+                continue
+            seen_rows.add(row)
+            
             name_item = self.table.item(row, 0)
             if not name_item:
                 continue
@@ -756,16 +884,165 @@ class FileDetailWidget(QWidget):
             path = name_item.data(Qt.ItemDataRole.UserRole)
             is_dir = name_item.data(Qt.ItemDataRole.UserRole + 1)
             
+            # Skip parent folder
+            if name_item.text() == "📁 .." or path is None:
+                continue
+            
+            size_item = self.table.item(row, 1)
+            size_str = size_item.text() if size_item else ""
+            size_bytes = self._parse_size(size_str) if not is_dir else 0
+            
+            infos.append({
+                "path": path,
+                "name": Path(path).name if self.panel_type == "local" else path.rstrip("/").rsplit("/", 1)[-1] or path,
+                "size": size_bytes,
+                "is_dir": bool(is_dir),
+                "panel_type": self.panel_type,
+                "device_serial": self.current_device.serial if self.current_device else None,
+            })
+        return infos
+    
+    def _has_remote_device(self) -> bool:
+        """Check if a remote device is connected via top-level window."""
+        win = self.window()
+        if win is None:
+            return False
+        remote_panel = getattr(win, "remote_panel", None)
+        if remote_panel is None:
+            return False
+        return remote_panel.file_detail.current_device is not None
+    
+    def _on_menu_push(self) -> None:
+        infos = self._collect_selection_infos()
+        if infos:
+            self.transfer_requested.emit(infos)
+    
+    def _on_menu_pull(self) -> None:
+        infos = self._collect_selection_infos()
+        if infos:
+            self.transfer_requested.emit(infos)
+    
+    def _on_menu_open_local(self) -> None:
+        """Open each selected local item in OS default app."""
+        for info in self._collect_selection_infos():
+            try:
+                open_in_default_app(info["path"])
+            except OSError as e:
+                QMessageBox.warning(self, tr("Cannot open file"), f"{info['path']}\n\n{e}")
+    
+    def _on_menu_open_remote(self) -> None:
+        """Request main window to download remote files to temp then open."""
+        infos = [i for i in self._collect_selection_infos() if not i["is_dir"]]
+        if infos:
+            self.open_remote_requested.emit(infos)
+    
+    def _on_create_folder_local(self) -> None:
+        """Create a new sub-folder in the current local directory."""
+        if not self.current_path:
+            return
+        
+        folder_name, ok = QInputDialog.getText(
+            self,
+            tr("New Folder"),
+            tr("Folder name:"),
+        )
+        if not ok or not folder_name:
+            return
+        
+        try:
+            (Path(self.current_path) / folder_name).mkdir(parents=False, exist_ok=False)
+        except Exception as e:
+            QMessageBox.warning(self, tr("Folder Creation Failed"), str(e))
+            return
+        
+        self.refresh_requested.emit()
+    
+    def _on_delete_local(self) -> None:
+        """Delete selected local files/folders with trash/permanent dialog."""
+        infos = self._collect_selection_infos()
+        if not infos:
+            return
+        
+        sample = infos[0]["name"] if len(infos) == 1 else ""
+        dialog = DeleteDialog(
+            item_count=len(infos),
+            allow_trash=True,
+            sample_name=sample,
+            parent=self,
+        )
+        dialog.exec()
+        choice = dialog.get_choice()
+        if choice == DeleteDialog.CANCEL:
+            return
+        
+        use_trash = choice == DeleteDialog.TRASH
+        send2trash = None
+        if use_trash:
+            try:
+                from send2trash import send2trash as _s2t
+                send2trash = _s2t
+            except ImportError:
+                QMessageBox.information(
+                    self,
+                    tr("Info"),
+                    tr("Trash not supported on this system, falling back to permanent delete"),
+                )
+                use_trash = False
+        
+        errors: list[str] = []
+        for info in infos:
+            path = info["path"]
+            try:
+                if use_trash:
+                    send2trash(str(path))
+                else:
+                    p = Path(path)
+                    if p.is_dir():
+                        shutil.rmtree(p)
+                    else:
+                        p.unlink()
+            except Exception as e:
+                errors.append(f"{path}: {e}")
+        
+        if errors:
+            QMessageBox.warning(self, tr("Delete Failed"), "\n".join(errors))
+        
+        self.refresh_requested.emit()
+    
+    def _on_delete_selected(self) -> None:
+        """Delete selected remote files/folders. Permanent only (Android rm -rf)."""
+        if not self.current_device:
+            return
+        
+        infos = self._collect_selection_infos()
+        if not infos:
+            return
+        
+        sample = infos[0]["name"] if len(infos) == 1 else ""
+        dialog = DeleteDialog(
+            item_count=len(infos),
+            allow_trash=False,  # Android has no trash
+            sample_name=sample,
+            parent=self,
+        )
+        dialog.exec()
+        if dialog.get_choice() == DeleteDialog.CANCEL:
+            return
+        
+        errors: list[str] = []
+        for info in infos:
             try:
                 self.adb_manager.delete_file(
                     self.current_device.serial,
-                    path,
-                    is_dir=is_dir,
+                    info["path"],
+                    is_dir=info["is_dir"],
                 )
             except Exception as e:
-                QMessageBox.warning(self, tr("Delete Failed"), f"{path}\n\n{str(e)}")
+                errors.append(f"{info['path']}: {e}")
         
-        # Refresh
+        if errors:
+            QMessageBox.warning(self, tr("Delete Failed"), "\n".join(errors))
+        
         self.refresh_requested.emit()
     
     def _on_rename_selected(self) -> None:
@@ -877,6 +1154,39 @@ class FileDetailWidget(QWidget):
     def _on_refresh(self) -> None:
         """Refresh handler."""
         self.refresh_requested.emit()
+    
+    def _retranslate_ui(self, _lang: str = "") -> None:
+        """Refresh translatable UI text."""
+        self.table.setHorizontalHeaderLabels([
+            tr("Name"), tr("Size"), tr("Date"), tr("Permissions"), tr("Type"),
+        ])
+        # Refresh status bar text
+        self._update_status_bar()
+        # Update Type/Permissions columns text and Parent row text
+        for row in range(self.table.rowCount()):
+            name_item = self.table.item(row, 0)
+            if not name_item:
+                continue
+            is_dir = name_item.data(Qt.ItemDataRole.UserRole + 1)
+            
+            # Parent ".." row
+            if name_item.text() == "📁 ..":
+                parent_type_item = self.table.item(row, 4)
+                if parent_type_item:
+                    parent_type_item.setText(tr("Parent"))
+                continue
+            
+            # Permissions column (local: shows Folder/File label)
+            if self.panel_type == "local":
+                perm_item = self.table.item(row, 3)
+                if perm_item:
+                    perm_item.setText(tr("Folder") if is_dir else tr("File"))
+            
+            # Type column (Folder vs extension)
+            if is_dir:
+                type_item = self.table.item(row, 4)
+                if type_item:
+                    type_item.setText(tr("Folder"))
     
     def _on_selection_changed(self) -> None:
         """Selection change handler."""
